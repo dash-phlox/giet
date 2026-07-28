@@ -442,7 +442,6 @@ func runInstallLocal(filePath string) {
     if repo == "" {
         repo = "local-package"
     }
-    repo = installer.CleanBinaryName(repo)
 
     if !quiet {
         fmt.Printf("Installing local package: %s\n", filePath)
@@ -969,96 +968,58 @@ func runRemove(arg string) {
         }
     }
 
-    if info.AssetURL == "" || !strings.HasPrefix(info.AssetURL, "http") {
-        binName := info.BinName
-        if binName == "" {
-            binName = info.PackageName
-        }
-        if binName == "" {
-            binName = info.Repo
-        }
+    assetURL := info.AssetURL
+    isSystemPkg := false
 
-        binPath := filepath.Join(getBinDir(), binName)
-        if _, err := os.Stat(binPath); err == nil {
-            if err := os.Remove(binPath); err != nil {
-                fmt.Printf("Warning: could not remove binary %s: %v\n", binPath, err)
-            } else {
-                fmt.Printf("Removed %s\n", binPath)
-            }
-        }
-
-        sharePath := filepath.Join(getShareDir(), binName)
-        if _, err := os.Stat(sharePath); err == nil {
-            if err := os.RemoveAll(sharePath); err != nil {
-                fmt.Printf("Warning: could not remove share directory %s: %v\n", sharePath, err)
-            } else {
-                fmt.Printf("Removed %s\n", sharePath)
-            }
-        }
-
-        desktopPath := filepath.Join(getApplicationsDir(), "giet-"+binName+".desktop")
-        if _, err := os.Stat(desktopPath); err == nil {
-            if err := os.Remove(desktopPath); err != nil {
-                fmt.Printf("Warning: could not remove desktop entry %s: %v\n", desktopPath, err)
-            } else {
-                fmt.Printf("Removed desktop entry: %s\n", desktopPath)
-            }
-        }
-
-        if err := db.Remove(key); err != nil {
-            fmt.Println(utils.Colorize(utils.ColorRed, "Error: "+err.Error()))
-            os.Exit(1)
-        }
-        fmt.Println(utils.Colorize(utils.ColorGreen, "Removal complete."))
-        return
+    if assetURL == "" {
+        isSystemPkg = true
+    } else if strings.HasSuffix(assetURL, ".rpm") || strings.HasSuffix(assetURL, ".deb") {
+        isSystemPkg = true
     }
 
-    if detect.IsRPMFamily() {
-        fmt.Printf("Removing '%s' via dnf...\n", info.PackageName)
-        cmd := exec.Command("sudo", "dnf", "remove", "-y", info.PackageName)
-        cmd.Stdout = os.Stdout
-        cmd.Stderr = os.Stderr
-        err := cmd.Run()
-        if err != nil {
-            if force {
-                fmt.Println(utils.Colorize(utils.ColorYellow, "dnf removal failed, but --force was used. Removing database entry only."))
-            } else {
-                fmt.Println(utils.Colorize(utils.ColorRed, "dnf removal failed."))
-                os.Exit(1)
+    if isSystemPkg {
+        if strings.HasSuffix(assetURL, ".rpm") || (assetURL == "" && detect.IsRPMFamily()) {
+            pkgName := info.PackageName
+            if pkgName == "" {
+                pkgName = info.BinName
             }
-        } else {
-            fmt.Println(utils.Colorize(utils.ColorGreen, "Package removed successfully via dnf."))
-            symlinkPath := "/usr/local/bin/" + info.BinName
-            if info.BinName != info.PackageName {
-                if _, e := os.Lstat(symlinkPath); e == nil {
-                    if e := os.Remove(symlinkPath); e == nil {
-                        fmt.Printf("Removed symlink: %s\n", symlinkPath)
-                    }
+            fmt.Printf("Removing '%s' via rpm...\n", pkgName)
+            cmd := exec.Command("rpm", "-e", pkgName)
+            output, err := cmd.CombinedOutput()
+            if err != nil {
+                if force {
+                    fmt.Println(utils.Colorize(utils.ColorYellow, "rpm removal failed, but --force was used. Removing database entry only."))
+                } else {
+                    fmt.Println(utils.Colorize(utils.ColorRed, "rpm removal failed:"))
+                    fmt.Println(string(output))
+                    os.Exit(1)
                 }
-            }
-        }
-        if err := db.Remove(key); err != nil {
-            fmt.Println(utils.Colorize(utils.ColorRed, "Error: "+err.Error()))
-            os.Exit(1)
-        }
-        fmt.Println(utils.Colorize(utils.ColorGreen, "Removal complete."))
-        return
-    } else if detect.IsDebFamily() {
-        fmt.Printf("Removing '%s' via apt...\n", info.PackageName)
-        cmd := exec.Command("sudo", "apt-get", "remove", "-y", info.PackageName)
-        cmd.Stdout = os.Stdout
-        cmd.Stderr = os.Stderr
-        err := cmd.Run()
-        if err != nil {
-            if force {
-                fmt.Println(utils.Colorize(utils.ColorYellow, "apt removal failed, but --force was used. Removing database entry only."))
             } else {
-                fmt.Println(utils.Colorize(utils.ColorRed, "apt removal failed."))
-                os.Exit(1)
+                fmt.Println(utils.Colorize(utils.ColorGreen, "Package removed successfully via rpm."))
+            }
+        } else if strings.HasSuffix(assetURL, ".deb") || (assetURL == "" && detect.IsDebFamily()) {
+            pkgName := info.PackageName
+            if pkgName == "" {
+                pkgName = info.BinName
+            }
+            fmt.Printf("Removing '%s' via dpkg...\n", pkgName)
+            cmd := exec.Command("dpkg", "-r", pkgName)
+            output, err := cmd.CombinedOutput()
+            if err != nil {
+                if force {
+                    fmt.Println(utils.Colorize(utils.ColorYellow, "dpkg removal failed, but --force was used. Removing database entry only."))
+                } else {
+                    fmt.Println(utils.Colorize(utils.ColorRed, "dpkg removal failed:"))
+                    fmt.Println(string(output))
+                    os.Exit(1)
+                }
+            } else {
+                fmt.Println(utils.Colorize(utils.ColorGreen, "Package removed successfully via dpkg."))
             }
         } else {
-            fmt.Println(utils.Colorize(utils.ColorGreen, "Package removed successfully via apt."))
+            fmt.Println(utils.Colorize(utils.ColorYellow, "No specific removal method, removing database entry only."))
         }
+
         if err := db.Remove(key); err != nil {
             fmt.Println(utils.Colorize(utils.ColorRed, "Error: "+err.Error()))
             os.Exit(1)
@@ -1067,7 +1028,41 @@ func runRemove(arg string) {
         return
     }
 
-    fmt.Println(utils.Colorize(utils.ColorYellow, "No specific removal method, removing database entry only."))
+    binName := info.BinName
+    if binName == "" {
+        binName = info.PackageName
+    }
+    if binName == "" {
+        binName = info.Repo
+    }
+
+    binPath := filepath.Join(getBinDir(), binName)
+    if _, err := os.Stat(binPath); err == nil {
+        if err := os.Remove(binPath); err != nil {
+            fmt.Printf("Warning: could not remove binary %s: %v\n", binPath, err)
+        } else {
+            fmt.Printf("Removed %s\n", binPath)
+        }
+    }
+
+    sharePath := filepath.Join(getShareDir(), binName)
+    if _, err := os.Stat(sharePath); err == nil {
+        if err := os.RemoveAll(sharePath); err != nil {
+            fmt.Printf("Warning: could not remove share directory %s: %v\n", sharePath, err)
+        } else {
+            fmt.Printf("Removed %s\n", sharePath)
+        }
+    }
+
+    desktopPath := filepath.Join(getApplicationsDir(), "giet-"+binName+".desktop")
+    if _, err := os.Stat(desktopPath); err == nil {
+        if err := os.Remove(desktopPath); err != nil {
+            fmt.Printf("Warning: could not remove desktop entry %s: %v\n", desktopPath, err)
+        } else {
+            fmt.Printf("Removed desktop entry: %s\n", desktopPath)
+        }
+    }
+
     if err := db.Remove(key); err != nil {
         fmt.Println(utils.Colorize(utils.ColorRed, "Error: "+err.Error()))
         os.Exit(1)

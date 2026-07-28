@@ -1687,13 +1687,44 @@ func findExecutable(rootDir, repo string) (string, error) {
     if err != nil {
         return "", err
     }
-
+    
     if len(candidates) > 0 {
         return candidates[0], nil
     }
     if len(fallbackCandidates) > 0 {
         return fallbackCandidates[0], nil
     }
+
+    var extraCandidates []string
+    filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+        if err != nil {
+            return err
+        }
+        if info.IsDir() {
+            return nil
+        }
+        base := filepath.Base(path)
+        if strings.HasPrefix(base, ".") || ignoredNames[strings.ToLower(base)] {
+            return nil
+        }
+        ext := strings.ToLower(filepath.Ext(base))
+        if ext == ".so" || ext == ".dylib" || ext == ".dll" || ext == ".a" || ext == ".o" {
+            return nil
+        }
+        if !isRealExecutable(path) {
+            return nil
+        }
+        if strings.EqualFold(base, repo) || strings.Contains(strings.ToLower(base), strings.ToLower(repo)) {
+            extraCandidates = append([]string{path}, extraCandidates...)
+            return filepath.SkipAll
+        }
+        extraCandidates = append(extraCandidates, path)
+        return nil
+    })
+    if len(extraCandidates) > 0 {
+        return extraCandidates[0], nil
+    }
+
     return "", fmt.Errorf("no executable files found in archive")
 }
 
