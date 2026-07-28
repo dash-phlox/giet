@@ -1571,8 +1571,11 @@ Categories=Utility;
 }
 
 func findExecutable(rootDir, repo string) (string, error) {
-    var candidates []string
-    var fallbackCandidates []string
+    type candidate struct {
+        path  string
+        score int
+    }
+    var candidates []candidate
 
     ignoredNames := map[string]bool{
         "chrome-sandbox": true, "crashpad_handler": true, "chrome_crashpad_handler": true,
@@ -1646,12 +1649,6 @@ func findExecutable(rootDir, repo string) (string, error) {
             return err
         }
         if info.IsDir() {
-            if info.Name() == "lib" || info.Name() == "plugins" || info.Name() == "resources" || info.Name() == "locales" {
-                return filepath.SkipDir
-            }
-            return nil
-        }
-        if info.Mode()&0111 == 0 {
             return nil
         }
         base := filepath.Base(path)
@@ -1662,70 +1659,53 @@ func findExecutable(rootDir, repo string) (string, error) {
         if ext == ".so" || ext == ".dylib" || ext == ".dll" || ext == ".a" || ext == ".o" {
             return nil
         }
-
         if !isRealExecutable(path) {
             return nil
         }
 
+        score := 0
         if strings.EqualFold(base, repo) {
-            candidates = append([]string{path}, candidates...)
-            return nil
+            score += 100
+        } else {
+            cleaned := CleanBinaryName(repo)
+            if strings.EqualFold(base, cleaned) {
+                score += 80
+            }
+            if strings.Contains(strings.ToLower(base), strings.ToLower(repo)) {
+                score += 50
+            }
+            if cleaned != repo && strings.Contains(strings.ToLower(base), strings.ToLower(cleaned)) {
+                score += 30
+            }
+            relPath, _ := filepath.Rel(rootDir, path)
+            if !strings.Contains(relPath, string(os.PathSeparator)) {
+                score += 20
+            }
         }
-        if strings.Contains(strings.ToLower(base), strings.ToLower(repo)) && !isTestScript(base) {
-            candidates = append(candidates, path)
-            return nil
+
+        if isTestScript(base) {
+            score -= 50
         }
-        if ext == "" && !isTestScript(base) {
-            fallbackCandidates = append(fallbackCandidates, path)
-            return nil
-        }
-        if !isTestScript(base) {
-            fallbackCandidates = append(fallbackCandidates, path)
-        }
+
+        candidates = append(candidates, candidate{path: path, score: score})
         return nil
     })
     if err != nil {
         return "", err
     }
-    
-    if len(candidates) > 0 {
-        return candidates[0], nil
-    }
-    if len(fallbackCandidates) > 0 {
-        return fallbackCandidates[0], nil
+
+    if len(candidates) == 0 {
+        return "", fmt.Errorf("no executable files found in archive")
     }
 
-    var extraCandidates []string
-    filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
-        if err != nil {
-            return err
+    sort.Slice(candidates, func(i, j int) bool {
+        if candidates[i].score != candidates[j].score {
+            return candidates[i].score > candidates[j].score
         }
-        if info.IsDir() {
-            return nil
-        }
-        base := filepath.Base(path)
-        if strings.HasPrefix(base, ".") || ignoredNames[strings.ToLower(base)] {
-            return nil
-        }
-        ext := strings.ToLower(filepath.Ext(base))
-        if ext == ".so" || ext == ".dylib" || ext == ".dll" || ext == ".a" || ext == ".o" {
-            return nil
-        }
-        if !isRealExecutable(path) {
-            return nil
-        }
-        if strings.EqualFold(base, repo) || strings.Contains(strings.ToLower(base), strings.ToLower(repo)) {
-            extraCandidates = append([]string{path}, extraCandidates...)
-            return filepath.SkipAll
-        }
-        extraCandidates = append(extraCandidates, path)
-        return nil
+        return candidates[i].path < candidates[j].path
     })
-    if len(extraCandidates) > 0 {
-        return extraCandidates[0], nil
-    }
 
-    return "", fmt.Errorf("no executable files found in archive")
+    return candidates[0].path, nil
 }
 
 func hasShebang(path string) bool {
