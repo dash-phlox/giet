@@ -971,9 +971,9 @@ func runRemove(arg string) {
     assetURL := info.AssetURL
     isSystemPkg := false
 
-    if assetURL == "" {
+    if strings.HasSuffix(assetURL, ".rpm") || strings.HasSuffix(assetURL, ".deb") {
         isSystemPkg = true
-    } else if strings.HasSuffix(assetURL, ".rpm") || strings.HasSuffix(assetURL, ".deb") {
+    } else if assetURL == "" && info.Version != "unknown" && info.Version != "local" {
         isSystemPkg = true
     }
 
