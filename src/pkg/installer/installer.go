@@ -812,12 +812,17 @@ func findBestIcon(rootDir, binName string) string {
 }
 
 func installAppImage(tmpPath, assetURL, repo, description string) (string, error) {
-    filename := filepath.Base(assetURL)
-    baseName := strings.TrimSuffix(filename, ".AppImage")
-    baseName = strings.TrimSuffix(baseName, ".appimage")
-    parts := strings.Split(baseName, "-")
-    if len(parts) > 0 {
-        baseName = parts[0]
+    var baseName string
+    if assetURL == "" {
+        baseName = repo
+    } else {
+        filename := filepath.Base(assetURL)
+        baseName = strings.TrimSuffix(filename, ".AppImage")
+        baseName = strings.TrimSuffix(baseName, ".appimage")
+        parts := strings.Split(baseName, "-")
+        if len(parts) > 0 {
+            baseName = parts[0]
+        }
     }
     baseName = strings.ToLower(baseName)
     if baseName == "" {
@@ -2077,7 +2082,7 @@ func FallbackInstall(repoPath, owner, repo string) (*db.PackageInfo, error) {
     execFile := candidates[0]
     srcPath := filepath.Join(repoPath, execFile)
     destPath := filepath.Join(binDir, execFile)
-    spinner := utils.NewSpinner("Installing (fallback)")
+    spinner := utils.NewSpinner("Installing")
     cmd := exec.Command("cp", srcPath, destPath)
     output, err := cmd.CombinedOutput()
     spinner.Stop()

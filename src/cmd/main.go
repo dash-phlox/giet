@@ -442,6 +442,7 @@ func runInstallLocal(filePath string) {
     if repo == "" {
         repo = "local-package"
     }
+    repo = installer.CleanBinaryName(repo)
 
     if !quiet {
         fmt.Printf("Installing local package: %s\n", filePath)
@@ -708,7 +709,7 @@ func runInstall(url string, isUpdate bool) {
                     fmt.Println(utils.Colorize(utils.ColorRed, "Error: "+err.Error()))
                     os.Exit(1)
                 }
-                fmt.Println(utils.Colorize(utils.ColorGreen, "Installation complete (fallback)."))
+                fmt.Println(utils.Colorize(utils.ColorGreen, "Installation complete."))
                 return
             }
             if systemPackageSearch(repo) {
