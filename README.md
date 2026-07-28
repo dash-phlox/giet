@@ -18,7 +18,7 @@ It installs pre‑built binaries directly from GitHub releases, supports local f
 ### From Source
 
 The only way to install Giet currently is to compile it from source.  
-You need [Go](https://go.dev/doc/install).
+You need [Go](https://go.dev/doc/install) and [Git](https://git-scm.com/install/linux).
 
 ```sh
 git clone https://github.com/dash-phlox/giet.git
