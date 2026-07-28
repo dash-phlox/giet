@@ -117,7 +117,7 @@ func main() {
                 runInstall("https://github.com/"+arg, false)
             } else {
                 if _, err := os.Stat(arg); err == nil {
-                    fmt.Println(utils.Colorize(utils.ColorRed, "Error: unsupported local file type. Supported: .tar.gz, .tgz, .tar.xz, .zip, .rpm, .tar"))
+                    fmt.Println(utils.Colorize(utils.ColorRed, "Error: unsupported local file type. Supported: .tar.gz, .tgz, .tar.xz, .zip, .rpm, .tar, .appimage"))
                 } else {
                     fmt.Println(utils.Colorize(utils.ColorRed, "Error: install argument must be a GitHub URL, owner/repo, or a local file"))
                 }
@@ -403,7 +403,7 @@ func isLocalFile(path string) bool {
     if info.IsDir() {
         return false
     }
-    supported := []string{".tar.gz", ".tgz", ".tar.xz", ".zip", ".rpm", ".tar"}
+    supported := []string{".tar.gz", ".tgz", ".tar.xz", ".zip", ".rpm", ".tar", ".appimage"}
     lower := strings.ToLower(path)
     for _, ext := range supported {
         if strings.HasSuffix(lower, ext) {
