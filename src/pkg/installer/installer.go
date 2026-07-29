@@ -646,6 +646,153 @@ func findBestIcon(rootDir, binName string) string {
     return bestPath
 }
 
+func finalizeInstalledArchive(sourceDir, execPath, binName, repo, description string) (string, error) {
+    shareDir := getShareDir()
+    binDir := getBinDir()
+    appDir := getApplicationsDir()
+    iconsDir := getIconsDir()
+
+    if err := os.MkdirAll(binDir, 0755); err != nil {
+        return "", fmt.Errorf("failed to create bin directory: %w", err)
+    }
+    if err := os.MkdirAll(shareDir, 0755); err != nil {
+        return "", fmt.Errorf("failed to create share directory: %w", err)
+    }
+    if err := os.MkdirAll(appDir, 0755); err != nil {
+        return "", fmt.Errorf("failed to create applications directory: %w", err)
+    }
+    if err := os.MkdirAll(iconsDir, 0755); err != nil {
+        return "", fmt.Errorf("failed to create icons directory: %w", err)
+    }
+
+    targetShareDir := filepath.Join(shareDir, binName)
+    if err := os.MkdirAll(targetShareDir, 0755); err != nil {
+        return "", err
+    }
+
+    spinner := utils.NewSpinner("Moving files")
+    err := filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+        if err != nil {
+            return err
+        }
+        if path == sourceDir {
+            return nil
+        }
+        relPath, _ := filepath.Rel(sourceDir, path)
+        dest := filepath.Join(targetShareDir, relPath)
+        if info.IsDir() {
+            return os.MkdirAll(dest, info.Mode())
+        }
+        if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+            return err
+        }
+        if err := os.Rename(path, dest); err != nil {
+            return copyFile(path, dest)
+        }
+        return nil
+    })
+    if err != nil {
+        spinner.Stop()
+        return "", err
+    }
+
+    err = filepath.Walk(targetShareDir, func(path string, info os.FileInfo, err error) error {
+        if err != nil {
+            return err
+        }
+        if !info.IsDir() {
+            if err := os.Chmod(path, 0755); err != nil {
+                return err
+            }
+        }
+        return nil
+    })
+    if err != nil {
+        spinner.Stop()
+        return "", fmt.Errorf("failed to set executable permissions: %w", err)
+    }
+    spinner.Stop()
+
+    relExecPath, err := filepath.Rel(sourceDir, execPath)
+    if err != nil {
+        return "", err
+    }
+    finalExecPath := filepath.Join(targetShareDir, relExecPath)
+
+    wrapperPath := filepath.Join(binDir, binName)
+    wrapperContent := fmt.Sprintf(`#!/bin/sh
+export LD_LIBRARY_PATH="%s${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "%s" "$@"
+`, targetShareDir, finalExecPath)
+
+    if err := os.WriteFile(wrapperPath, []byte(wrapperContent), 0755); err != nil {
+        return "", fmt.Errorf("failed to create wrapper script: %w", err)
+    }
+
+    createDesktop := AutoYes
+    if !createDesktop && !QuietMode {
+        fmt.Print("Create desktop entry? [y/N]: ")
+        var resp string
+        fmt.Scanln(&resp)
+        if resp == "y" || resp == "Y" {
+            createDesktop = true
+        }
+    }
+    if createDesktop {
+        desktopTarget := filepath.Join(appDir, "giet-"+binName+".desktop")
+
+        iconPath := findBestIcon(targetShareDir, binName)
+        if iconPath != "" {
+            if strings.Contains(iconPath, "/") {
+                ext := filepath.Ext(iconPath)
+                destIcon := filepath.Join(iconsDir, "hicolor", "256x256", "apps", binName+ext)
+                if err := os.MkdirAll(filepath.Dir(destIcon), 0755); err == nil {
+                    data, err := os.ReadFile(iconPath)
+                    if err == nil {
+                        os.WriteFile(destIcon, data, 0644)
+                        iconPath = destIcon
+                    } else {
+                        iconPath = binName
+                    }
+                } else {
+                    iconPath = binName
+                }
+            }
+        } else {
+            iconPath = binName
+            if !QuietMode {
+                fmt.Println(utils.Colorize(utils.ColorYellow, "No icon found; using icon name '"+binName+"' (may not appear)."))
+            }
+        }
+
+        displayName := capitalize(binName)
+        if description == "" {
+            description = fmt.Sprintf("%s application", displayName)
+        }
+
+        desktopContent := fmt.Sprintf(`[Desktop Entry]
+Name=%s
+Comment=%s
+Exec=%s
+Icon=%s
+Type=Application
+Categories=Utility;
+`, displayName, description, wrapperPath, iconPath)
+
+        if err := os.WriteFile(desktopTarget, []byte(desktopContent), 0644); err != nil {
+            fmt.Printf("Warning: could not create desktop entry: %v\n", err)
+        } else if !QuietMode {
+            fmt.Printf("Created desktop entry: %s\n", desktopTarget)
+        }
+    }
+
+    if !QuietMode {
+        fmt.Printf("Installed executable to %s (wrapper)\n", wrapperPath)
+        fmt.Printf("Additional files installed to %s\n", targetShareDir)
+    }
+    return binName, nil
+}
+
 func installAppImage(tmpPath, assetURL, repo, description string) (string, error) {
     var baseName string
     if assetURL == "" {
@@ -856,50 +1003,53 @@ exec "%s" "$@"
         }
     }
     if createDesktop {
-        desktopTarget := filepath.Join(appDir, "giet-"+binName+".desktop")
+        var iconSearchDir string
+        if finalExtractDir != "" {
+            iconSearchDir = finalExtractDir
+        }
 
-        iconPath := findBestIcon(targetShareDir, binName)
-        if iconPath != "" {
-            if strings.Contains(iconPath, "/") {
+        var iconPath string
+        if iconSearchDir != "" {
+            iconPath = findBestIcon(iconSearchDir, baseName)
+            if iconPath != "" {
                 ext := filepath.Ext(iconPath)
-                destIcon := filepath.Join(iconsDir, "hicolor", "256x256", "apps", binName+ext)
+                destIcon := filepath.Join(iconsDir, "hicolor", "256x256", "apps", baseName+ext)
                 if err := os.MkdirAll(filepath.Dir(destIcon), 0755); err == nil {
                     data, err := os.ReadFile(iconPath)
                     if err == nil {
                         os.WriteFile(destIcon, data, 0644)
                         iconPath = destIcon
-                    } else {
-                        iconPath = binName
                     }
-                } else {
-                    iconPath = binName
                 }
-            }
-        } else {
-            iconPath = binName
-            if !QuietMode {
-                fmt.Println(utils.Colorize(utils.ColorYellow, "No icon found; using icon name '"+binName+"' (may not appear)."))
             }
         }
 
-        displayName := capitalize(binName)
+        if iconPath == "" {
+            iconPath = baseName
+            if !QuietMode {
+                fmt.Println(utils.Colorize(utils.ColorYellow, "No icon found; using icon name '"+baseName+"' (may not appear)."))
+            }
+        }
+
+        displayName := capitalize(baseName)
         if description == "" {
             description = fmt.Sprintf("%s application", displayName)
         }
 
+        targetDesktop := filepath.Join(appDir, "giet-"+baseName+".desktop")
         desktopContent := fmt.Sprintf(`[Desktop Entry]
-    Name=%s
-    Comment=%s
-    Exec=%s
-    Icon=%s
-    Type=Application
-    Categories=Utility;
-    `, displayName, description, wrapperPath, iconPath)
+Name=%s
+Comment=%s
+Exec=%s
+Icon=%s
+Type=Application
+Categories=Utility;
+`, displayName, description, destPath, iconPath)
 
-        if err := os.WriteFile(desktopTarget, []byte(desktopContent), 0644); err != nil {
+        if err := os.WriteFile(targetDesktop, []byte(desktopContent), 0644); err != nil {
             fmt.Printf("Warning: could not create desktop entry: %v\n", err)
         } else if !QuietMode {
-            fmt.Printf("Created desktop entry: %s\n", desktopTarget)
+            fmt.Printf("Created desktop entry: %s\n", targetDesktop)
         }
     }
 
@@ -1047,141 +1197,7 @@ func installTarball(tmpPath, assetURL, owner, repo, description string) (string,
         binName = repo
     }
 
-    shareDir := getShareDir()
-    binDir := getBinDir()
-    appDir := getApplicationsDir()
-    iconsDir := getIconsDir()
-
-    if err := os.MkdirAll(binDir, 0755); err != nil {
-        return "", fmt.Errorf("failed to create bin directory: %w", err)
-    }
-    if err := os.MkdirAll(shareDir, 0755); err != nil {
-        return "", fmt.Errorf("failed to create share directory: %w", err)
-    }
-    if err := os.MkdirAll(appDir, 0755); err != nil {
-        return "", fmt.Errorf("failed to create applications directory: %w", err)
-    }
-    if err := os.MkdirAll(iconsDir, 0755); err != nil {
-        return "", fmt.Errorf("failed to create icons directory: %w", err)
-    }
-
-    targetShareDir := filepath.Join(shareDir, binName)
-    if err := os.MkdirAll(targetShareDir, 0755); err != nil {
-        return "", err
-    }
-
-    spinner = utils.NewSpinner("Moving files")
-    err = filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
-        if err != nil {
-            return err
-        }
-        if path == sourceDir {
-            return nil
-        }
-        relPath, _ := filepath.Rel(sourceDir, path)
-        dest := filepath.Join(targetShareDir, relPath)
-        if info.IsDir() {
-            return os.MkdirAll(dest, info.Mode())
-        }
-        if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-            return err
-        }
-        if err := os.Rename(path, dest); err != nil {
-            return copyFile(path, dest)
-        }
-        return nil
-    })
-    if err != nil {
-        spinner.Stop()
-        return "", err
-    }
-
-    err = filepath.Walk(targetShareDir, func(path string, info os.FileInfo, err error) error {
-        if err != nil {
-            return err
-        }
-        if !info.IsDir() {
-            if err := os.Chmod(path, 0755); err != nil {
-                return err
-            }
-        }
-        return nil
-    })
-    if err != nil {
-        spinner.Stop()
-        return "", fmt.Errorf("failed to set executable permissions: %w", err)
-    }
-    spinner.Stop()
-
-    relExecPath, _ := filepath.Rel(sourceDir, execPath)
-    finalExecPath := filepath.Join(targetShareDir, relExecPath)
-
-    wrapperPath := filepath.Join(binDir, binName)
-    wrapperContent := fmt.Sprintf(`#!/bin/sh
-export LD_LIBRARY_PATH="%s${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "%s" "$@"
-`, targetShareDir, finalExecPath)
-
-    if err := os.WriteFile(wrapperPath, []byte(wrapperContent), 0755); err != nil {
-        return "", fmt.Errorf("failed to create wrapper script: %w", err)
-    }
-
-    createDesktop := AutoYes
-    if !createDesktop && !QuietMode {
-        fmt.Print("Create desktop entry? [y/N]: ")
-        var resp string
-        fmt.Scanln(&resp)
-        if resp == "y" || resp == "Y" {
-            createDesktop = true
-        }
-    }
-    if createDesktop {
-        desktopTarget := filepath.Join(appDir, "giet-"+binName+".desktop")
-
-        iconPath := findBestIcon(targetShareDir, binName)
-        if iconPath != "" {
-            ext := filepath.Ext(iconPath)
-            destIcon := filepath.Join(iconsDir, "hicolor", "256x256", "apps", binName+ext)
-            if err := os.MkdirAll(filepath.Dir(destIcon), 0755); err == nil {
-                data, err := os.ReadFile(iconPath)
-                if err == nil {
-                    os.WriteFile(destIcon, data, 0644)
-                    iconPath = destIcon
-                }
-            }
-        } else {
-            iconPath = binName
-            if !QuietMode {
-                fmt.Println(utils.Colorize(utils.ColorYellow, "No icon found; using icon name '"+binName+"' (may not appear)."))
-            }
-        }
-
-        displayName := capitalize(binName)
-        if description == "" {
-            description = fmt.Sprintf("%s application", displayName)
-        }
-
-        desktopContent := fmt.Sprintf(`[Desktop Entry]
-Name=%s
-Comment=%s
-Exec=%s
-Icon=%s
-Type=Application
-Categories=Utility;
-`, displayName, description, wrapperPath, iconPath)
-
-        if err := os.WriteFile(desktopTarget, []byte(desktopContent), 0644); err != nil {
-            fmt.Printf("Warning: could not create desktop entry: %v\n", err)
-        } else if !QuietMode {
-            fmt.Printf("Created desktop entry: %s\n", desktopTarget)
-        }
-    }
-
-    if !QuietMode {
-        fmt.Printf("Installed executable to %s (wrapper)\n", wrapperPath)
-        fmt.Printf("Additional files installed to %s\n", targetShareDir)
-    }
-    return binName, nil
+    return finalizeInstalledArchive(sourceDir, execPath, binName, repo, description)
 }
 
 func installZip(tmpPath, assetURL, owner, repo, description string) (string, error) {
@@ -1259,141 +1275,7 @@ func installZip(tmpPath, assetURL, owner, repo, description string) (string, err
         binName = repo
     }
 
-    shareDir := getShareDir()
-    binDir := getBinDir()
-    appDir := getApplicationsDir()
-    iconsDir := getIconsDir()
-
-    if err := os.MkdirAll(binDir, 0755); err != nil {
-        return "", fmt.Errorf("failed to create bin directory: %w", err)
-    }
-    if err := os.MkdirAll(shareDir, 0755); err != nil {
-        return "", fmt.Errorf("failed to create share directory: %w", err)
-    }
-    if err := os.MkdirAll(appDir, 0755); err != nil {
-        return "", fmt.Errorf("failed to create applications directory: %w", err)
-    }
-    if err := os.MkdirAll(iconsDir, 0755); err != nil {
-        return "", fmt.Errorf("failed to create icons directory: %w", err)
-    }
-
-    targetShareDir := filepath.Join(shareDir, binName)
-    if err := os.MkdirAll(targetShareDir, 0755); err != nil {
-        return "", err
-    }
-
-    spinner = utils.NewSpinner("Moving files")
-    err = filepath.Walk(extractDir, func(path string, info os.FileInfo, err error) error {
-        if err != nil {
-            return err
-        }
-        if path == extractDir {
-            return nil
-        }
-        relPath, _ := filepath.Rel(extractDir, path)
-        dest := filepath.Join(targetShareDir, relPath)
-        if info.IsDir() {
-            return os.MkdirAll(dest, info.Mode())
-        }
-        if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-            return err
-        }
-        if err := os.Rename(path, dest); err != nil {
-            return copyFile(path, dest)
-        }
-        return nil
-    })
-    if err != nil {
-        spinner.Stop()
-        return "", err
-    }
-
-    err = filepath.Walk(targetShareDir, func(path string, info os.FileInfo, err error) error {
-        if err != nil {
-            return err
-        }
-        if !info.IsDir() {
-            if err := os.Chmod(path, 0755); err != nil {
-                return err
-            }
-        }
-        return nil
-    })
-    if err != nil {
-        spinner.Stop()
-        return "", fmt.Errorf("failed to set executable permissions: %w", err)
-    }
-    spinner.Stop()
-
-    relExecPath, _ := filepath.Rel(extractDir, execPath)
-    finalExecPath := filepath.Join(targetShareDir, relExecPath)
-
-    wrapperPath := filepath.Join(binDir, binName)
-    wrapperContent := fmt.Sprintf(`#!/bin/sh
-export LD_LIBRARY_PATH="%s${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "%s" "$@"
-`, targetShareDir, finalExecPath)
-
-    if err := os.WriteFile(wrapperPath, []byte(wrapperContent), 0755); err != nil {
-        return "", fmt.Errorf("failed to create wrapper script: %w", err)
-    }
-
-    createDesktop := AutoYes
-    if !createDesktop && !QuietMode {
-        fmt.Print("Create desktop entry? [y/N]: ")
-        var resp string
-        fmt.Scanln(&resp)
-        if resp == "y" || resp == "Y" {
-            createDesktop = true
-        }
-    }
-    if createDesktop {
-        desktopTarget := filepath.Join(appDir, "giet-"+binName+".desktop")
-
-        iconPath := findBestIcon(targetShareDir, binName)
-        if iconPath != "" {
-            ext := filepath.Ext(iconPath)
-            destIcon := filepath.Join(iconsDir, "hicolor", "256x256", "apps", binName+ext)
-            if err := os.MkdirAll(filepath.Dir(destIcon), 0755); err == nil {
-                data, err := os.ReadFile(iconPath)
-                if err == nil {
-                    os.WriteFile(destIcon, data, 0644)
-                    iconPath = destIcon
-                }
-            }
-        } else {
-            iconPath = binName
-            if !QuietMode {
-                fmt.Println(utils.Colorize(utils.ColorYellow, "No icon found; using icon name '"+binName+"' (may not appear)."))
-            }
-        }
-
-        displayName := capitalize(binName)
-        if description == "" {
-            description = fmt.Sprintf("%s application", displayName)
-        }
-
-        desktopContent := fmt.Sprintf(`[Desktop Entry]
-Name=%s
-Comment=%s
-Exec=%s
-Icon=%s
-Type=Application
-Categories=Utility;
-`, displayName, description, wrapperPath, iconPath)
-
-        if err := os.WriteFile(desktopTarget, []byte(desktopContent), 0644); err != nil {
-            fmt.Printf("Warning: could not create desktop entry: %v\n", err)
-        } else if !QuietMode {
-            fmt.Printf("Created desktop entry: %s\n", desktopTarget)
-        }
-    }
-
-    if !QuietMode {
-        fmt.Printf("Installed executable to %s (wrapper)\n", wrapperPath)
-        fmt.Printf("Additional files installed to %s\n", targetShareDir)
-    }
-    return binName, nil
+    return finalizeInstalledArchive(extractDir, execPath, binName, repo, description)
 }
 
 func findExecutable(rootDir, repo string) (string, error) {
@@ -1546,88 +1428,6 @@ func extractPackageName(assetURL string) string {
     name = strings.TrimSuffix(name, ".zip")
     parts := strings.SplitN(name, "-", 2)
     return parts[0]
-}
-
-func RemovePackage(key string) error {
-    data, err := db.Load()
-    if err != nil {
-        return err
-    }
-    pkg, exists := data[key]
-    if !exists {
-        return fmt.Errorf("package not found in giet database: %s", key)
-    }
-    binName := pkg.BinName
-    if binName == "" {
-        binName = pkg.PackageName
-        if binName == "" {
-            binName = pkg.Repo
-        }
-    }
-
-    binDir := getBinDir()
-    shareDir := getShareDir()
-    appDir := getApplicationsDir()
-    binPath := filepath.Join(binDir, binName)
-
-    fmt.Println("Removing...")
-    var removalErr error
-    if _, e := os.Stat(binPath); e == nil {
-        if err := os.Remove(binPath); err != nil {
-            removalErr = err
-        } else {
-            fmt.Printf("  Removed %s\n", binPath)
-        }
-    }
-    sharePath := filepath.Join(shareDir, binName)
-    if _, e := os.Stat(sharePath); e == nil {
-        if err := os.RemoveAll(sharePath); err != nil {
-            removalErr = err
-        } else {
-            fmt.Printf("  Removed %s\n", sharePath)
-        }
-    }
-    desktopFiles, _ := filepath.Glob(filepath.Join(appDir, "*.desktop"))
-    removedDesktop := false
-    for _, df := range desktopFiles {
-        data, err := os.ReadFile(df)
-        if err != nil {
-            continue
-        }
-        if strings.Contains(string(data), "Exec="+binPath) {
-            if err := os.Remove(df); err != nil {
-                fmt.Printf("Warning: could not remove desktop entry %s: %v\n", df, err)
-            } else {
-                fmt.Printf("  Removed desktop entry: %s\n", filepath.Base(df))
-                removedDesktop = true
-            }
-        }
-    }
-    if !removedDesktop {
-        pattern := filepath.Join(appDir, "*"+binName+"*.desktop")
-        matches, _ := filepath.Glob(pattern)
-        for _, m := range matches {
-            if err := os.Remove(m); err != nil {
-                fmt.Printf("Warning: could not remove desktop entry %s: %v\n", m, err)
-            } else {
-                fmt.Printf("  Removed desktop entry (filename match): %s\n", filepath.Base(m))
-                removedDesktop = true
-            }
-        }
-    }
-    if !removedDesktop {
-        fmt.Println("  No matching desktop entry found.")
-    }
-
-    if removalErr != nil {
-        return removalErr
-    }
-
-    if err := db.Remove(key); err != nil {
-        return err
-    }
-    fmt.Println(utils.Colorize(utils.ColorGreen, "Removal complete."))
-    return nil
 }
 
 func checkDependency(cmdName, pkgName string) error {
