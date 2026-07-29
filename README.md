@@ -1,6 +1,6 @@
 # Giet
 
-**Giet** is a GitHub‑based package manager for Linux.  
+**Giet** is a GitHub‑based package manager for Linux.
 It installs pre‑built binaries directly from GitHub releases, supports local files (tarballs, zips, AppImages, RPMs), and offers basic package management (install, remove, update, lock/unlock).
 
 ## Features
@@ -17,7 +17,7 @@ It installs pre‑built binaries directly from GitHub releases, supports local f
 
 ### From Source
 
-The only way to install Giet currently is to compile it from source.  
+The only way to install Giet currently is to compile it from source.
 You need [Go](https://go.dev/doc/install) and [Git](https://git-scm.com/install/linux).
 
 ```sh
@@ -40,9 +40,9 @@ giet -h
 ### Install a package from GitHub
 
 ```sh
-giet -i owner/repo
-# or
 giet -i https://github.com/owner/repo
+# or
+giet -i owner/repo
 ```
 
 ### Install a local package
@@ -67,7 +67,10 @@ giet -r package-name
 
 ```sh
 giet -u package-name
-# update all packages
+```
+
+### Update all packages
+```sh
 giet -u
 ```
 
