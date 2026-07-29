@@ -1607,43 +1607,6 @@ func findExecutable(rootDir, repo string) (string, error) {
         return false
     }
 
-    isRealExecutable := func(path string) bool {
-        f, err := os.Open(path)
-        if err != nil {
-            return false
-        }
-        defer f.Close()
-        header := make([]byte, 2)
-        n, _ := f.Read(header)
-        if n >= 2 && bytes.Equal(header, []byte("#!")) {
-            base := filepath.Base(path)
-            if isTestScript(base) {
-                return false
-            }
-            return true
-        }
-        cmd := exec.Command("file", "--brief", "--mime-type", path)
-        out, err := cmd.Output()
-        if err != nil {
-            return false
-        }
-        mime := strings.TrimSpace(string(out))
-        if strings.HasPrefix(mime, "application/x-executable") ||
-            strings.HasPrefix(mime, "application/x-sharedlib") ||
-            strings.HasPrefix(mime, "application/x-pie-executable") {
-            return true
-        }
-        cmd = exec.Command("file", path)
-        out, err = cmd.Output()
-        if err != nil {
-            return false
-        }
-        if strings.Contains(string(out), "ELF") || strings.Contains(string(out), "Mach-O") {
-            return true
-        }
-        return false
-    }
-
     err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
         if err != nil {
             return err
@@ -1657,9 +1620,6 @@ func findExecutable(rootDir, repo string) (string, error) {
         }
         ext := strings.ToLower(filepath.Ext(base))
         if ext == ".so" || ext == ".dylib" || ext == ".dll" || ext == ".a" || ext == ".o" {
-            return nil
-        }
-        if !isRealExecutable(path) {
             return nil
         }
 
