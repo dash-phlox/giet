@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -49,32 +50,34 @@ func getApplicationsDir() string {
 }
 
 func main() {
-	pflag.BoolVarP(&quiet, "quiet", "q", false, "Show minimal output")
-	pflag.BoolVarP(&yes, "yes", "y", false, "Auto-confirm prompts")
-	pflag.BoolVarP(&force, "force", "f", false, "Force removal even if removal fails (with -r)")
-	pflag.StringVar(&forceVersion, "force-version", "", "Install specific version of a package (with -i)")
+	fs := pflag.NewFlagSet("giet", pflag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
 
-	pflag.BoolVarP(&installFlag, "install", "i", false, "Install packages")
-	pflag.BoolVarP(&removeFlag, "remove", "r", false, "Remove packages")
-	pflag.BoolVarP(&updateFlag, "update", "u", false, "Update packages (all if no arguments)")
-	pflag.BoolVarP(&listFlag, "list", "l", false, "List installed packages")
+	fs.BoolVarP(&quiet, "quiet", "q", false, "Show minimal output")
+	fs.BoolVarP(&yes, "yes", "y", false, "Auto-confirm prompts")
+	fs.BoolVarP(&force, "force", "f", false, "Force removal even if removal fails (with -r)")
+	fs.StringVar(&forceVersion, "force-version", "", "Install specific version of a package (with -i)")
 
-	pflag.StringVar(&lockPkg, "lock", "", "Lock a package to its current version")
-	pflag.BoolVar(&unlockFlag, "unlock", false, "Unlock packages")
+	fs.BoolVarP(&installFlag, "install", "i", false, "Install packages")
+	fs.BoolVarP(&removeFlag, "remove", "r", false, "Remove packages")
+	fs.BoolVarP(&updateFlag, "update", "u", false, "Update packages (all if no arguments)")
+	fs.BoolVarP(&listFlag, "list", "l", false, "List installed packages")
 
-	pflag.BoolVarP(&showVersion, "version", "v", false, "Show giet version")
-	pflag.BoolVarP(&showHelp, "help", "h", false, "Show this help message")
+	fs.StringVar(&lockPkg, "lock", "", "Lock a package to its current version")
+	fs.BoolVar(&unlockFlag, "unlock", false, "Unlock packages")
 
-	pflag.Usage = func() {}
+	fs.BoolVarP(&showVersion, "version", "v", false, "Show giet version")
+	fs.BoolVarP(&showHelp, "help", "h", false, "Show this help message")
 
-	err := pflag.CommandLine.Parse(os.Args[1:])
+	err := fs.Parse(os.Args[1:])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Run 'giet -h' for help.\n")
+		fmt.Println(utils.Colorize(utils.ColorRed, "Error: "+err.Error()))
+		fmt.Println("Run 'giet -h' for help.")
 		os.Exit(1)
 	}
 
-	if pflag.NFlag() == 0 && len(pflag.Args()) == 0 {
+	if fs.NFlag() == 0 && len(fs.Args()) == 0 {
 		printHelp()
 		os.Exit(0)
 	}
@@ -129,7 +132,7 @@ func main() {
 	installer.SetQuiet(quiet)
 	installer.AutoYes = yes
 
-	args := pflag.Args()
+	args := fs.Args()
 
 	switch {
 	case installFlag:
