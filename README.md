@@ -6,7 +6,7 @@ It installs pre‑built binaries directly from GitHub releases, supports local f
 ## Features
 
 - Install packages from GitHub URLs or `owner/repo` strings
-- Install local packages (`.tar.gz`, `.tgz`, `.tar.xz`, `.tar`, `.zip`, `.rpm`, `.appimage`)
+- Install local packages (`.tar.gz`, `.tgz`, `.tar.xz`, `.tar`, `.zip`, `.appimage`)
 - List installed packages
 - Remove packages
 - Update single, multiple, or all packages
@@ -91,7 +91,7 @@ giet -v
 
 ## Supported Formats
 
-- **GitHub releases**: `.rpm`, `.appimage`, `.tar.gz`, `.tgz`, `.tar.xz`, `.zip`
+- **GitHub releases**: `.appimage`, `.tar.gz`, `.tgz`, `.tar.xz`, `.zip`
 - **Local files**: same as above, plus plain `.tar`
 
 ## Contributing

@@ -178,15 +178,14 @@ type AssetInfo struct {
     Type string
 }
 
-func FindAsset(release *github.GitHubRelease, distro, arch string) (string, []AssetInfo) {
+func FindAsset(release *github.GitHubRelease, arch string) (string, []AssetInfo) {
     var candidates []AssetInfo
     var genericCandidates []AssetInfo
 
     priority := map[string]int{
-        "rpm":      1,
-        "appimage": 2,
-        "tarball":  3,
-        "zip":      4,
+        "appimage": 1,
+        "tarball":  2,
+        "zip":      3,
     }
 
     archVariants := []string{arch}
@@ -225,10 +224,6 @@ func FindAsset(release *github.GitHubRelease, distro, arch string) (string, []As
             }
         }
 
-        if strings.HasSuffix(lowerName, ".deb") {
-            continue
-        }
-
         containsOtherArch := false
         for _, a := range allArchs {
             if strings.Contains(lowerName, a) {
@@ -254,18 +249,6 @@ func FindAsset(release *github.GitHubRelease, distro, arch string) (string, []As
         var isArchSpecific bool
 
         switch {
-        case strings.HasSuffix(lowerName, ".rpm"):
-            if !detect.IsRPMFamily() {
-                continue
-            }
-            assetType = "rpm"
-            for _, v := range archVariants {
-                if strings.Contains(lowerName, v) {
-                    matchesArch = true
-                    break
-                }
-            }
-            isArchSpecific = true
         case isAppImage:
             assetType = "appimage"
             for _, v := range archVariants {
@@ -333,7 +316,7 @@ func FindAsset(release *github.GitHubRelease, distro, arch string) (string, []As
     return "MULTIPLE", allCandidates
 }
 
-func DownloadAndInstall(assetURL, distro, owner, repo, version, description string) (*db.PackageInfo, error) {
+func DownloadAndInstall(assetURL, owner, repo, version, description string) (*db.PackageInfo, error) {
     tmpFile, err := os.CreateTemp("", "giet-*.pkg")
     if err != nil {
         return nil, err
@@ -351,21 +334,6 @@ func DownloadAndInstall(assetURL, distro, owner, repo, version, description stri
     lower := strings.ToLower(assetURL)
     var info *db.PackageInfo
     switch {
-    case strings.HasSuffix(lower, ".rpm"):
-        pkgName, err := installRPM(tmpFile.Name())
-        if err != nil {
-            return nil, err
-        }
-        info = &db.PackageInfo{
-            Owner:       owner,
-            Repo:        repo,
-            URL:         fmt.Sprintf("https://github.com/%s/%s", owner, repo),
-            AssetURL:    assetURL,
-            Version:     version,
-            PackageName: pkgName,
-            BinName:     pkgName,
-            InstallTime: time.Now(),
-        }
     case strings.HasSuffix(lower, ".appimage"):
         binName, err := installAppImage(tmpFile.Name(), assetURL, repo, description)
         if err != nil {
@@ -436,9 +404,6 @@ func detectFileType(path string) string {
     if err != nil || n < 512 {
         return ""
     }
-    if bytes.Equal(header[:3], []byte("RPM")) {
-        return "rpm"
-    }
     if bytes.HasPrefix(header[257:263], []byte("ustar")) {
         return "tar"
     }
@@ -463,12 +428,6 @@ func InstallLocalFile(filePath, owner, repo, description string) (*db.PackageInf
     var err error
 
     switch {
-    case detectedType == "rpm" || strings.HasSuffix(lower, ".rpm"):
-        pkgName, err = installRPM(filePath)
-        if err != nil {
-            return nil, err
-        }
-        binName = pkgName
     case detectedType == "tar" || detectedType == "gzip" || detectedType == "xz" ||
         strings.HasSuffix(lower, ".tar") || strings.HasSuffix(lower, ".tar.gz") ||
         strings.HasSuffix(lower, ".tgz") || strings.HasSuffix(lower, ".tar.xz"):
@@ -553,128 +512,6 @@ func CleanBinaryName(name string) string {
     name = re.ReplaceAllString(name, "")
     name = strings.ToLower(name)
     return name
-}
-
-func installRPM(pkgPath string) (string, error) {
-    if _, err := os.Stat(pkgPath); err != nil {
-        return "", fmt.Errorf("package file not found: %w", err)
-    }
-    absPath, err := filepath.Abs(pkgPath)
-    if err != nil {
-        return "", err
-    }
-    nameCmd := exec.Command("rpm", "-qp", "--qf", "%{NAME}", absPath)
-    nameOut, err := nameCmd.Output()
-    if err != nil {
-        return "", fmt.Errorf("failed to query RPM package name: %w", err)
-    }
-    pkgName := strings.TrimSpace(string(nameOut))
-    if pkgName == "" {
-        return "", fmt.Errorf("could not determine RPM package name")
-    }
-
-    spinner := utils.NewSpinner("Installing")
-    cmd := exec.Command("rpm", "-ivh", absPath)
-    output, err := cmd.CombinedOutput()
-    spinner.Stop()
-    if err != nil {
-        outputStr := string(output)
-        if strings.Contains(outputStr, "already installed") {
-            fmt.Println(utils.Colorize(utils.ColorYellow, "Package already installed."))
-            return pkgName, nil
-        }
-        if strings.Contains(outputStr, "conflicts with file from package") {
-            lines := strings.Split(outputStr, "\n")
-            var conflictLine string
-            for _, line := range lines {
-                if strings.Contains(line, "conflicts with file from package") {
-                    conflictLine = strings.TrimSpace(line)
-                    break
-                }
-            }
-            if conflictLine == "" {
-                conflictLine = strings.TrimSpace(outputStr)
-            }
-            re := regexp.MustCompile(`from package (\S+)`)
-            matches := re.FindStringSubmatch(conflictLine)
-            conflictingPkg := ""
-            if len(matches) > 1 {
-                conflictingPkg = matches[1]
-            }
-            fmt.Println(utils.Colorize(utils.ColorRed, "File conflict detected:"))
-            fmt.Println(conflictLine)
-            fmt.Println()
-            fmt.Println("Options:")
-            fmt.Println("  1) Overwrite conflicting files")
-            if conflictingPkg != "" {
-                fmt.Printf("  2) Remove conflicting package [%s] and continue\n", conflictingPkg)
-            } else {
-                fmt.Println("  2) Remove conflicting package and continue")
-            }
-            fmt.Println("  3) Cancel installation")
-            fmt.Print("Choose an option [1/2/3]: ")
-            var choice string
-            fmt.Scanln(&choice)
-            switch choice {
-            case "1":
-                fmt.Println("Overwriting conflicting files...")
-                spinner := utils.NewSpinner("Installing (with replacefiles)")
-                replaceCmd := exec.Command("rpm", "-ivh", "--replacefiles", absPath)
-                replaceOut, replaceErr := replaceCmd.CombinedOutput()
-                spinner.Stop()
-                if replaceErr != nil {
-                    fmt.Println(utils.Colorize(utils.ColorRed, "Installation still failed:"))
-                    replaceStr := string(replaceOut)
-                    if strings.Contains(replaceStr, "conflicts with file from package") {
-                        lines2 := strings.Split(replaceStr, "\n")
-                        for _, line := range lines2 {
-                            if strings.Contains(line, "conflicts with file from package") {
-                                fmt.Println(line)
-                                break
-                            }
-                        }
-                    } else {
-                        fmt.Println(replaceStr)
-                    }
-                    return "", replaceErr
-                }
-                fmt.Println(utils.Colorize(utils.ColorGreen, "Installation succeeded."))
-                return pkgName, nil
-            case "2":
-                if conflictingPkg == "" {
-                    fmt.Println(utils.Colorize(utils.ColorRed, "Could not determine conflicting package name. Aborting."))
-                    return "", fmt.Errorf("cannot remove conflicting package")
-                }
-                fmt.Printf("Removing conflicting package: %s\n", conflictingPkg)
-                removeCmd := exec.Command("rpm", "-e", conflictingPkg)
-                removeOut, removeErr := removeCmd.CombinedOutput()
-                if removeErr != nil {
-                    fmt.Println(utils.Colorize(utils.ColorRed, "Failed to remove conflicting package:"))
-                    fmt.Println(string(removeOut))
-                    return "", removeErr
-                }
-                fmt.Println(utils.Colorize(utils.ColorGreen, "Conflicting package removed. Retrying installation..."))
-                spinner := utils.NewSpinner("Installing")
-                retryCmd := exec.Command("rpm", "-ivh", absPath)
-                retryOut, retryErr := retryCmd.CombinedOutput()
-                spinner.Stop()
-                if retryErr != nil {
-                    fmt.Println(utils.Colorize(utils.ColorRed, "Installation failed after removing conflict:"))
-                    fmt.Println(string(retryOut))
-                    return "", retryErr
-                }
-                fmt.Println(utils.Colorize(utils.ColorGreen, "Installation succeeded."))
-                return pkgName, nil
-            default:
-                fmt.Println("Installation cancelled.")
-                return "", fmt.Errorf("installation cancelled by user")
-            }
-        }
-        fmt.Println(utils.Colorize(utils.ColorRed, "Command failed:"))
-        fmt.Println(outputStr)
-        return "", err
-    }
-    return pkgName, nil
 }
 
 func findBestIcon(rootDir, binName string) string {
@@ -768,40 +605,38 @@ func findBestIcon(rootDir, binName string) string {
                 for _, line := range lines {
                     if strings.HasPrefix(line, "Icon=") {
                         iconName := strings.TrimPrefix(line, "Icon=")
-                        if strings.Contains(iconName, "/") {
-                            if filepath.IsAbs(iconName) {
-                                if _, err := os.Stat(iconName); err == nil {
-                                    bestPath = iconName
-                                    return bestPath
-                                }
-                            } else {
-                                candidate := filepath.Join(rootDir, iconName)
-                                if _, err := os.Stat(candidate); err == nil {
-                                    bestPath = candidate
-                                    return bestPath
-                                }
+                        if !strings.Contains(iconName, "/") {
+                            return iconName
+                        }
+                        if filepath.IsAbs(iconName) {
+                            if _, err := os.Stat(iconName); err == nil {
+                                return iconName
                             }
                         } else {
-                            var found string
-                            filepath.Walk(rootDir, func(p string, info os.FileInfo, err error) error {
-                                if err != nil || info.IsDir() {
-                                    return nil
-                                }
-                                base := filepath.Base(p)
-                                if strings.Contains(strings.ToLower(base), strings.ToLower(iconName)) {
-                                    ext := strings.ToLower(filepath.Ext(p))
-                                    if ext == ".png" || ext == ".svg" || ext == ".xpm" {
-                                        found = p
-                                        return filepath.SkipAll
-                                    }
-                                }
-                                return nil
-                            })
-                            if found != "" {
-                                bestPath = found
-                                return bestPath
+                            candidate := filepath.Join(rootDir, iconName)
+                            if _, err := os.Stat(candidate); err == nil {
+                                return candidate
                             }
                         }
+                        var found string
+                        filepath.Walk(rootDir, func(p string, info os.FileInfo, err error) error {
+                            if err != nil || info.IsDir() {
+                                return nil
+                            }
+                            base := filepath.Base(p)
+                            if strings.Contains(strings.ToLower(base), strings.ToLower(iconName)) {
+                                ext := strings.ToLower(filepath.Ext(p))
+                                if ext == ".png" || ext == ".svg" || ext == ".xpm" {
+                                    found = p
+                                    return filepath.SkipAll
+                                }
+                            }
+                            return nil
+                        })
+                        if found != "" {
+                            return found
+                        }
+                        return iconName
                     }
                 }
             }
@@ -1011,65 +846,60 @@ exec "%s" "$@"
 
     time.Sleep(200 * time.Millisecond)
 
-    if !detect.IsAndroid() {
-        createDesktop := AutoYes
-        if !createDesktop && !QuietMode {
-            fmt.Print("Create desktop entry? [y/N]: ")
-            var resp string
-            fmt.Scanln(&resp)
-            if resp == "y" || resp == "Y" {
-                createDesktop = true
+    createDesktop := AutoYes
+    if !createDesktop && !QuietMode {
+        fmt.Print("Create desktop entry? [y/N]: ")
+        var resp string
+        fmt.Scanln(&resp)
+        if resp == "y" || resp == "Y" {
+            createDesktop = true
+        }
+    }
+    if createDesktop {
+        desktopTarget := filepath.Join(appDir, "giet-"+binName+".desktop")
+
+        iconPath := findBestIcon(targetShareDir, binName)
+        if iconPath != "" {
+            if strings.Contains(iconPath, "/") {
+                ext := filepath.Ext(iconPath)
+                destIcon := filepath.Join(iconsDir, "hicolor", "256x256", "apps", binName+ext)
+                if err := os.MkdirAll(filepath.Dir(destIcon), 0755); err == nil {
+                    data, err := os.ReadFile(iconPath)
+                    if err == nil {
+                        os.WriteFile(destIcon, data, 0644)
+                        iconPath = destIcon
+                    } else {
+                        iconPath = binName
+                    }
+                } else {
+                    iconPath = binName
+                }
+            }
+        } else {
+            iconPath = binName
+            if !QuietMode {
+                fmt.Println(utils.Colorize(utils.ColorYellow, "No icon found; using icon name '"+binName+"' (may not appear)."))
             }
         }
-        if createDesktop {
-            var iconSearchDir string
-            if finalExtractDir != "" {
-                iconSearchDir = finalExtractDir
-            }
 
-            var iconPath string
-            if iconSearchDir != "" {
-                iconPath = findBestIcon(iconSearchDir, baseName)
-                if iconPath != "" {
-                    ext := filepath.Ext(iconPath)
-                    destIcon := filepath.Join(iconsDir, "hicolor", "256x256", "apps", baseName+ext)
-                    if err := os.MkdirAll(filepath.Dir(destIcon), 0755); err == nil {
-                        data, err := os.ReadFile(iconPath)
-                        if err == nil {
-                            os.WriteFile(destIcon, data, 0644)
-                            iconPath = destIcon
-                        }
-                    }
-                }
-            }
+        displayName := capitalize(binName)
+        if description == "" {
+            description = fmt.Sprintf("%s application", displayName)
+        }
 
-            if iconPath == "" {
-                iconPath = baseName
-                if !QuietMode {
-                    fmt.Println(utils.Colorize(utils.ColorYellow, "No icon found; using icon name '"+baseName+"' (may not appear)."))
-                }
-            }
+        desktopContent := fmt.Sprintf(`[Desktop Entry]
+    Name=%s
+    Comment=%s
+    Exec=%s
+    Icon=%s
+    Type=Application
+    Categories=Utility;
+    `, displayName, description, wrapperPath, iconPath)
 
-            displayName := capitalize(baseName)
-            if description == "" {
-                description = fmt.Sprintf("%s application", displayName)
-            }
-
-            targetDesktop := filepath.Join(appDir, "giet-"+baseName+".desktop")
-            desktopContent := fmt.Sprintf(`[Desktop Entry]
-Name=%s
-Comment=%s
-Exec=%s
-Icon=%s
-Type=Application
-Categories=Utility;
-`, displayName, description, destPath, iconPath)
-
-            if err := os.WriteFile(targetDesktop, []byte(desktopContent), 0644); err != nil {
-                fmt.Printf("Warning: could not create desktop entry: %v\n", err)
-            } else if !QuietMode {
-                fmt.Printf("Created desktop entry: %s\n", targetDesktop)
-            }
+        if err := os.WriteFile(desktopTarget, []byte(desktopContent), 0644); err != nil {
+            fmt.Printf("Warning: could not create desktop entry: %v\n", err)
+        } else if !QuietMode {
+            fmt.Printf("Created desktop entry: %s\n", desktopTarget)
         }
     }
 
@@ -1296,43 +1126,42 @@ exec "%s" "$@"
         return "", fmt.Errorf("failed to create wrapper script: %w", err)
     }
 
-    if !detect.IsAndroid() {
-        createDesktop := AutoYes
-        if !createDesktop && !QuietMode {
-            fmt.Print("Create desktop entry? [y/N]: ")
-            var resp string
-            fmt.Scanln(&resp)
-            if resp == "y" || resp == "Y" {
-                createDesktop = true
+    createDesktop := AutoYes
+    if !createDesktop && !QuietMode {
+        fmt.Print("Create desktop entry? [y/N]: ")
+        var resp string
+        fmt.Scanln(&resp)
+        if resp == "y" || resp == "Y" {
+            createDesktop = true
+        }
+    }
+    if createDesktop {
+        desktopTarget := filepath.Join(appDir, "giet-"+binName+".desktop")
+
+        iconPath := findBestIcon(targetShareDir, binName)
+        if iconPath != "" {
+            ext := filepath.Ext(iconPath)
+            destIcon := filepath.Join(iconsDir, "hicolor", "256x256", "apps", binName+ext)
+            if err := os.MkdirAll(filepath.Dir(destIcon), 0755); err == nil {
+                data, err := os.ReadFile(iconPath)
+                if err == nil {
+                    os.WriteFile(destIcon, data, 0644)
+                    iconPath = destIcon
+                }
+            }
+        } else {
+            iconPath = binName
+            if !QuietMode {
+                fmt.Println(utils.Colorize(utils.ColorYellow, "No icon found; using icon name '"+binName+"' (may not appear)."))
             }
         }
-        if createDesktop {
-            desktopTarget := filepath.Join(appDir, "giet-"+binName+".desktop")
 
-            iconPath := findBestIcon(targetShareDir, binName)
-            if iconPath != "" {
-                ext := filepath.Ext(iconPath)
-                destIcon := filepath.Join(iconsDir, "hicolor", "256x256", "apps", binName+ext)
-                if err := os.MkdirAll(filepath.Dir(destIcon), 0755); err == nil {
-                    data, err := os.ReadFile(iconPath)
-                    if err == nil {
-                        os.WriteFile(destIcon, data, 0644)
-                        iconPath = destIcon
-                    }
-                }
-            } else {
-                iconPath = binName
-                if !QuietMode {
-                    fmt.Println(utils.Colorize(utils.ColorYellow, "No icon found; using icon name '"+binName+"' (may not appear)."))
-                }
-            }
+        displayName := capitalize(binName)
+        if description == "" {
+            description = fmt.Sprintf("%s application", displayName)
+        }
 
-            displayName := capitalize(binName)
-            if description == "" {
-                description = fmt.Sprintf("%s application", displayName)
-            }
-
-            desktopContent := fmt.Sprintf(`[Desktop Entry]
+        desktopContent := fmt.Sprintf(`[Desktop Entry]
 Name=%s
 Comment=%s
 Exec=%s
@@ -1341,11 +1170,10 @@ Type=Application
 Categories=Utility;
 `, displayName, description, wrapperPath, iconPath)
 
-            if err := os.WriteFile(desktopTarget, []byte(desktopContent), 0644); err != nil {
-                fmt.Printf("Warning: could not create desktop entry: %v\n", err)
-            } else if !QuietMode {
-                fmt.Printf("Created desktop entry: %s\n", desktopTarget)
-            }
+        if err := os.WriteFile(desktopTarget, []byte(desktopContent), 0644); err != nil {
+            fmt.Printf("Warning: could not create desktop entry: %v\n", err)
+        } else if !QuietMode {
+            fmt.Printf("Created desktop entry: %s\n", desktopTarget)
         }
     }
 
@@ -1510,43 +1338,42 @@ exec "%s" "$@"
         return "", fmt.Errorf("failed to create wrapper script: %w", err)
     }
 
-    if !detect.IsAndroid() {
-        createDesktop := AutoYes
-        if !createDesktop && !QuietMode {
-            fmt.Print("Create desktop entry? [y/N]: ")
-            var resp string
-            fmt.Scanln(&resp)
-            if resp == "y" || resp == "Y" {
-                createDesktop = true
+    createDesktop := AutoYes
+    if !createDesktop && !QuietMode {
+        fmt.Print("Create desktop entry? [y/N]: ")
+        var resp string
+        fmt.Scanln(&resp)
+        if resp == "y" || resp == "Y" {
+            createDesktop = true
+        }
+    }
+    if createDesktop {
+        desktopTarget := filepath.Join(appDir, "giet-"+binName+".desktop")
+
+        iconPath := findBestIcon(targetShareDir, binName)
+        if iconPath != "" {
+            ext := filepath.Ext(iconPath)
+            destIcon := filepath.Join(iconsDir, "hicolor", "256x256", "apps", binName+ext)
+            if err := os.MkdirAll(filepath.Dir(destIcon), 0755); err == nil {
+                data, err := os.ReadFile(iconPath)
+                if err == nil {
+                    os.WriteFile(destIcon, data, 0644)
+                    iconPath = destIcon
+                }
+            }
+        } else {
+            iconPath = binName
+            if !QuietMode {
+                fmt.Println(utils.Colorize(utils.ColorYellow, "No icon found; using icon name '"+binName+"' (may not appear)."))
             }
         }
-        if createDesktop {
-            desktopTarget := filepath.Join(appDir, "giet-"+binName+".desktop")
 
-            iconPath := findBestIcon(targetShareDir, binName)
-            if iconPath != "" {
-                ext := filepath.Ext(iconPath)
-                destIcon := filepath.Join(iconsDir, "hicolor", "256x256", "apps", binName+ext)
-                if err := os.MkdirAll(filepath.Dir(destIcon), 0755); err == nil {
-                    data, err := os.ReadFile(iconPath)
-                    if err == nil {
-                        os.WriteFile(destIcon, data, 0644)
-                        iconPath = destIcon
-                    }
-                }
-            } else {
-                iconPath = binName
-                if !QuietMode {
-                    fmt.Println(utils.Colorize(utils.ColorYellow, "No icon found; using icon name '"+binName+"' (may not appear)."))
-                }
-            }
+        displayName := capitalize(binName)
+        if description == "" {
+            description = fmt.Sprintf("%s application", displayName)
+        }
 
-            displayName := capitalize(binName)
-            if description == "" {
-                description = fmt.Sprintf("%s application", displayName)
-            }
-
-            desktopContent := fmt.Sprintf(`[Desktop Entry]
+        desktopContent := fmt.Sprintf(`[Desktop Entry]
 Name=%s
 Comment=%s
 Exec=%s
@@ -1555,11 +1382,10 @@ Type=Application
 Categories=Utility;
 `, displayName, description, wrapperPath, iconPath)
 
-            if err := os.WriteFile(desktopTarget, []byte(desktopContent), 0644); err != nil {
-                fmt.Printf("Warning: could not create desktop entry: %v\n", err)
-            } else if !QuietMode {
-                fmt.Printf("Created desktop entry: %s\n", desktopTarget)
-            }
+        if err := os.WriteFile(desktopTarget, []byte(desktopContent), 0644); err != nil {
+            fmt.Printf("Warning: could not create desktop entry: %v\n", err)
+        } else if !QuietMode {
+            fmt.Printf("Created desktop entry: %s\n", desktopTarget)
         }
     }
 
@@ -1623,6 +1449,30 @@ func findExecutable(rootDir, repo string) (string, error) {
             return nil
         }
 
+        f, err := os.Open(path)
+        if err != nil {
+            return nil
+        }
+        defer f.Close()
+        header := make([]byte, 4)
+        n, err := f.Read(header)
+        if err != nil || n < 4 {
+            f.Seek(0, 0)
+            shebang := make([]byte, 2)
+            n2, _ := f.Read(shebang)
+            if n2 >= 2 && bytes.Equal(shebang, []byte("#!")) {
+            } else {
+                return nil
+            }
+        } else if !bytes.Equal(header, []byte{0x7f, 0x45, 0x4c, 0x46}) {
+            f.Seek(0, 0)
+            shebang := make([]byte, 2)
+            n2, _ := f.Read(shebang)
+            if n2 < 2 || !bytes.Equal(shebang, []byte("#!")) {
+                return nil
+            }
+        }
+
         score := 0
         if strings.EqualFold(base, repo) {
             score += 100
@@ -1668,17 +1518,6 @@ func findExecutable(rootDir, repo string) (string, error) {
     return candidates[0].path, nil
 }
 
-func hasShebang(path string) bool {
-    f, err := os.Open(path)
-    if err != nil {
-        return false
-    }
-    defer f.Close()
-    header := make([]byte, 2)
-    n, _ := f.Read(header)
-    return n >= 2 && bytes.Equal(header, []byte("#!"))
-}
-
 func copyFile(src, dst string) error {
     in, err := os.Open(src)
     if err != nil {
@@ -1699,8 +1538,7 @@ func copyFile(src, dst string) error {
 
 func extractPackageName(assetURL string) string {
     base := filepath.Base(assetURL)
-    name := strings.TrimSuffix(base, ".rpm")
-    name = strings.TrimSuffix(name, ".appimage")
+    name := strings.TrimSuffix(base, ".appimage")
     name = strings.TrimSuffix(name, ".tar.gz")
     name = strings.TrimSuffix(name, ".tgz")
     name = strings.TrimSuffix(name, ".tar.xz")
@@ -1710,7 +1548,7 @@ func extractPackageName(assetURL string) string {
     return parts[0]
 }
 
-func RemovePackage(key string, distro string) error {
+func RemovePackage(key string) error {
     data, err := db.Load()
     if err != nil {
         return err
@@ -1719,7 +1557,6 @@ func RemovePackage(key string, distro string) error {
     if !exists {
         return fmt.Errorf("package not found in giet database: %s", key)
     }
-    assetURL := pkg.AssetURL
     binName := pkg.BinName
     if binName == "" {
         binName = pkg.PackageName
@@ -1733,163 +1570,63 @@ func RemovePackage(key string, distro string) error {
     appDir := getApplicationsDir()
     binPath := filepath.Join(binDir, binName)
 
-    isAppImage := false
-    if strings.HasSuffix(assetURL, ".appimage") || strings.HasSuffix(assetURL, ".AppImage") {
-        isAppImage = true
-    } else if assetURL == "" {
-        if _, err := os.Stat(binPath); err == nil {
-            fileCmd := exec.Command("file", binPath)
-            fileOut, _ := fileCmd.Output()
-            if strings.Contains(string(fileOut), "AppImage") {
-                isAppImage = true
-            }
-        }
-    }
-
-    switch {
-    case strings.HasSuffix(assetURL, ".rpm"):
-        err := removeRPM(pkg.PackageName)
-        if err != nil {
-            if strings.Contains(err.Error(), "not installed") {
-                fmt.Printf("RPM package not found, attempting to remove binary: %s\n", binPath)
-                if e := os.Remove(binPath); e != nil {
-                    return fmt.Errorf("failed to remove binary: %w", e)
-                }
-                fmt.Printf("Removed %s\n", binPath)
-                return nil
-            }
-            return err
-        }
-        return nil
-    case isAppImage:
-        fmt.Println("Removing AppImage...")
-        if _, err := os.Stat(binPath); err == nil {
-            if err := os.Remove(binPath); err != nil {
-                return fmt.Errorf("failed to remove %s: %w", binPath, err)
-            }
-            fmt.Printf("  Removed %s\n", binPath)
+    fmt.Println("Removing...")
+    var removalErr error
+    if _, e := os.Stat(binPath); e == nil {
+        if err := os.Remove(binPath); err != nil {
+            removalErr = err
         } else {
-            fmt.Printf("  Binary not found: %s\n", binPath)
+            fmt.Printf("  Removed %s\n", binPath)
         }
-        desktopFiles, _ := filepath.Glob(filepath.Join(appDir, "*.desktop"))
-        removedDesktop := false
-        for _, df := range desktopFiles {
-            data, err := os.ReadFile(df)
-            if err != nil {
-                continue
-            }
-            if strings.Contains(string(data), "Exec="+binPath) {
-                if err := os.Remove(df); err != nil {
-                    fmt.Printf("Warning: could not remove desktop entry %s: %v\n", df, err)
-                } else {
-                    fmt.Printf("  Removed desktop entry: %s\n", filepath.Base(df))
-                    removedDesktop = true
-                }
-            }
-        }
-        if !removedDesktop {
-            pattern := filepath.Join(appDir, "*"+binName+"*.desktop")
-            matches, _ := filepath.Glob(pattern)
-            for _, m := range matches {
-                if err := os.Remove(m); err != nil {
-                    fmt.Printf("Warning: could not remove desktop entry %s: %v\n", m, err)
-                } else {
-                    fmt.Printf("  Removed desktop entry (filename match): %s\n", filepath.Base(m))
-                    removedDesktop = true
-                }
-            }
-        }
-        if !removedDesktop {
-            fmt.Println("  No matching desktop entry found.")
-        }
-        homeDir := getHomeDir()
-        if homeDir != "" {
-            appsDir := filepath.Join(homeDir, "Applications")
-            pattern := filepath.Join(appsDir, "*"+binName+"*")
-            matches, _ := filepath.Glob(pattern)
-            if len(matches) == 0 {
-                fmt.Printf("  No files found in %s matching '%s'.\n", appsDir, "*"+binName+"*")
-            } else {
-                for _, m := range matches {
-                    if err := os.Remove(m); err != nil {
-                        fmt.Printf("Warning: could not remove %s: %v\n", m, err)
-                    } else {
-                        fmt.Printf("  Removed from ~/Applications: %s\n", filepath.Base(m))
-                    }
-                }
-            }
-        }
-        return nil
-    default:
-        sharePath := filepath.Join(shareDir, binName)
-        fmt.Println("Removing...")
-        var removalErr error
-        if _, e := os.Stat(binPath); e == nil {
-            if err := os.Remove(binPath); err != nil {
-                removalErr = err
-            } else {
-                fmt.Printf("  Removed %s\n", binPath)
-            }
-        }
-        if _, e := os.Stat(sharePath); e == nil {
-            if err := os.RemoveAll(sharePath); err != nil {
-                removalErr = err
-            } else {
-                fmt.Printf("  Removed %s\n", sharePath)
-            }
-        }
-        desktopFiles, _ := filepath.Glob(filepath.Join(appDir, "*.desktop"))
-        removedDesktop := false
-        for _, df := range desktopFiles {
-            data, err := os.ReadFile(df)
-            if err != nil {
-                continue
-            }
-            if strings.Contains(string(data), "Exec="+binPath) {
-                if err := os.Remove(df); err != nil {
-                    fmt.Printf("Warning: could not remove desktop entry %s: %v\n", df, err)
-                } else {
-                    fmt.Printf("  Removed desktop entry: %s\n", filepath.Base(df))
-                    removedDesktop = true
-                }
-            }
-        }
-        if !removedDesktop {
-            pattern := filepath.Join(appDir, "*"+binName+"*.desktop")
-            matches, _ := filepath.Glob(pattern)
-            for _, m := range matches {
-                if err := os.Remove(m); err != nil {
-                    fmt.Printf("Warning: could not remove desktop entry %s: %v\n", m, err)
-                } else {
-                    fmt.Printf("  Removed desktop entry (filename match): %s\n", filepath.Base(m))
-                    removedDesktop = true
-                }
-            }
-        }
-        if !removedDesktop {
-            fmt.Println("  No matching desktop entry found.")
-        }
-        if removalErr != nil {
-            return removalErr
-        }
-        return nil
     }
-}
+    sharePath := filepath.Join(shareDir, binName)
+    if _, e := os.Stat(sharePath); e == nil {
+        if err := os.RemoveAll(sharePath); err != nil {
+            removalErr = err
+        } else {
+            fmt.Printf("  Removed %s\n", sharePath)
+        }
+    }
+    desktopFiles, _ := filepath.Glob(filepath.Join(appDir, "*.desktop"))
+    removedDesktop := false
+    for _, df := range desktopFiles {
+        data, err := os.ReadFile(df)
+        if err != nil {
+            continue
+        }
+        if strings.Contains(string(data), "Exec="+binPath) {
+            if err := os.Remove(df); err != nil {
+                fmt.Printf("Warning: could not remove desktop entry %s: %v\n", df, err)
+            } else {
+                fmt.Printf("  Removed desktop entry: %s\n", filepath.Base(df))
+                removedDesktop = true
+            }
+        }
+    }
+    if !removedDesktop {
+        pattern := filepath.Join(appDir, "*"+binName+"*.desktop")
+        matches, _ := filepath.Glob(pattern)
+        for _, m := range matches {
+            if err := os.Remove(m); err != nil {
+                fmt.Printf("Warning: could not remove desktop entry %s: %v\n", m, err)
+            } else {
+                fmt.Printf("  Removed desktop entry (filename match): %s\n", filepath.Base(m))
+                removedDesktop = true
+            }
+        }
+    }
+    if !removedDesktop {
+        fmt.Println("  No matching desktop entry found.")
+    }
 
-func removeRPM(pkgName string) error {
-    return runCmdSilentWithMessage("Removing", "rpm", "-e", pkgName)
-}
+    if removalErr != nil {
+        return removalErr
+    }
 
-func runCmdSilentWithMessage(message, name string, args ...string) error {
-    spinner := utils.NewSpinner(message)
-    cmd := exec.Command(name, args...)
-    output, err := cmd.CombinedOutput()
-    spinner.Stop()
-    if err != nil {
-        fmt.Println(utils.Colorize(utils.ColorRed, "Command failed:"))
-        fmt.Println(string(output))
+    if err := db.Remove(key); err != nil {
         return err
     }
+    fmt.Println(utils.Colorize(utils.ColorGreen, "Removal complete."))
     return nil
 }
 
@@ -1897,26 +1634,7 @@ func checkDependency(cmdName, pkgName string) error {
     if _, err := exec.LookPath(cmdName); err == nil {
         return nil
     }
-    if detect.IsAndroid() {
-        fmt.Printf(utils.Colorize(utils.ColorYellow, "Missing dependency: %s\n"), cmdName)
-        fmt.Printf("Would you like to install it via 'pkg install %s'? [y/N]: ", pkgName)
-        var resp string
-        fmt.Scanln(&resp)
-        if resp == "y" || resp == "Y" {
-            spinner := utils.NewSpinner(fmt.Sprintf("Installing %s", pkgName))
-            cmd := exec.Command("pkg", "install", "-y", pkgName)
-            output, err := cmd.CombinedOutput()
-            spinner.Stop()
-            if err != nil {
-                fmt.Println(utils.Colorize(utils.ColorRed, "Failed to install "+pkgName))
-                fmt.Println(string(output))
-                return err
-            }
-            fmt.Printf(utils.Colorize(utils.ColorGreen, "Successfully installed %s\n"), pkgName)
-            return nil
-        }
-        return fmt.Errorf("missing required dependency: %s", cmdName)
-    }
+    fmt.Printf(utils.Colorize(utils.ColorYellow, "Missing dependency: %s\n"), cmdName)
     return fmt.Errorf("missing required dependency: %s. Please install it manually.", cmdName)
 }
 
@@ -1962,16 +1680,7 @@ func CloneDefaultBranch(owner, repo string) (string, error) {
     if err := checkDependency("git", "git"); err != nil {
         return "", err
     }
-    var baseDir string
-    if detect.IsAndroid() {
-        cwd, err := os.Getwd()
-        if err != nil {
-            return "", err
-        }
-        baseDir = filepath.Join(cwd, ".giet-tmp")
-    } else {
-        baseDir = "/tmp/giet"
-    }
+    baseDir := "/tmp/giet"
     if err := os.MkdirAll(baseDir, 0755); err != nil {
         return "", fmt.Errorf("failed to create temp directory: %w", err)
     }

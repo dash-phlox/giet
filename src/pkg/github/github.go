@@ -6,8 +6,6 @@ import (
     "net/http"
     "net/url"
     "strings"
-
-    "giet/pkg/detect"
 )
 
 type GitHubRelease struct {
@@ -131,7 +129,7 @@ func GetAllReleases(owner, repo string) ([]GitHubRelease, error) {
     return allReleases, nil
 }
 
-func FindFirstReleaseWithCompatibleAsset(owner, repo, distro, arch string) (*GitHubRelease, string, error) {
+func FindFirstReleaseWithCompatibleAsset(owner, repo, arch string) (*GitHubRelease, string, error) {
     releases, err := GetAllReleases(owner, repo)
     if err != nil {
         return nil, "", err
@@ -140,11 +138,11 @@ func FindFirstReleaseWithCompatibleAsset(owner, repo, distro, arch string) (*Git
         if release.TagName == "" {
             continue
         }
-        assetURL := findCompatibleAssetInRelease(&release, distro, arch, true)
+        assetURL := findCompatibleAssetInRelease(&release, arch, true)
         if assetURL != "" {
             return &release, assetURL, nil
         }
-        assetURL = findCompatibleAssetInRelease(&release, distro, arch, false)
+        assetURL = findCompatibleAssetInRelease(&release, arch, false)
         if assetURL != "" {
             return &release, assetURL, nil
         }
@@ -152,7 +150,7 @@ func FindFirstReleaseWithCompatibleAsset(owner, repo, distro, arch string) (*Git
     return nil, "", nil
 }
 
-func findCompatibleAssetInRelease(release *GitHubRelease, distro, arch string, strict bool) string {
+func findCompatibleAssetInRelease(release *GitHubRelease, arch string, strict bool) string {
     matchArch := arch
     if arch == "aarch64" {
         matchArch = "arm64"
@@ -169,15 +167,7 @@ func findCompatibleAssetInRelease(release *GitHubRelease, distro, arch string, s
             continue
         }
 
-        if strings.HasSuffix(lowerName, ".rpm") && !detect.IsRPMFamily() {
-            continue
-        }
-        if strings.HasSuffix(lowerName, ".appimage") && !detect.HasGLIBC() {
-            continue
-        }
-
-        isSupported := strings.HasSuffix(lowerName, ".rpm") ||
-            strings.HasSuffix(lowerName, ".appimage") ||
+        isSupported := strings.HasSuffix(lowerName, ".appimage") ||
             strings.HasSuffix(lowerName, ".tar.gz") ||
             strings.HasSuffix(lowerName, ".tgz") ||
             strings.HasSuffix(lowerName, ".tar.xz") ||

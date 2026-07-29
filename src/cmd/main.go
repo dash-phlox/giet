@@ -3,11 +3,9 @@ package main
 import (
     "fmt"
     "os"
-    "os/exec"
     "path/filepath"
     "strconv"
     "strings"
-    "time"
 
     "giet/pkg/db"
     "giet/pkg/detect"
@@ -16,7 +14,7 @@ import (
     "giet/pkg/utils"
 )
 
-const version = "0.4.0"
+const version = "0.5.0"
 
 var (
     quiet        bool
@@ -33,16 +31,6 @@ var (
     showHelp     bool
     showVersion  bool
 )
-
-func getPrivilegeCommand() string {
-    if _, err := exec.LookPath("sudo"); err == nil {
-        return "sudo"
-    }
-    if _, err := exec.LookPath("doas"); err == nil {
-        return "doas"
-    }
-    return ""
-}
 
 func getBinDir() string {
     home, _ := os.UserHomeDir()
@@ -131,7 +119,7 @@ func main() {
                 runInstall("https://github.com/"+arg, false)
             } else {
                 if _, err := os.Stat(arg); err == nil {
-                    fmt.Println(utils.Colorize(utils.ColorRed, "Error: unsupported local file type. Supported: .tar.gz, .tgz, .tar.xz, .zip, .rpm, .tar, .appimage"))
+                    fmt.Println(utils.Colorize(utils.ColorRed, "Error: unsupported local file type. Supported: .tar.gz, .tgz, .tar.xz, .zip, .tar, .appimage"))
                 } else {
                     fmt.Println(utils.Colorize(utils.ColorRed, "Error: install argument must be a GitHub URL, owner/repo, or a local file"))
                 }
@@ -392,7 +380,7 @@ Commands:
 Options:
   -q,  --quiet                     Show minimal output
   -y,  --yes                       Auto-confirm prompts
-  -f,  --force                     Force removal even if system removal fails (with -r)
+  -f,  --force                     Force removal even if removal fails (with -r)
   -fv, --force-version             Install specific version of a package (with -i)
 
 Giet:
@@ -417,7 +405,7 @@ func isLocalFile(path string) bool {
     if info.IsDir() {
         return false
     }
-    supported := []string{".tar.gz", ".tgz", ".tar.xz", ".zip", ".rpm", ".tar", ".appimage"}
+    supported := []string{".tar.gz", ".tgz", ".tar.xz", ".zip", ".tar", ".appimage"}
     lower := strings.ToLower(path)
     for _, ext := range supported {
         if strings.HasSuffix(lower, ext) {
@@ -469,114 +457,6 @@ func runInstallLocal(filePath string) {
     }
 
     fmt.Println(utils.Colorize(utils.ColorGreen, "Installation complete."))
-}
-
-func systemPackageSearch(pkgName string) bool {
-    if detect.IsRPMFamily() {
-        if !quiet {
-            fmt.Printf("Searching for '%s' in dnf repositories...\n", pkgName)
-        }
-        cmd := exec.Command("dnf", "search", "--quiet", pkgName)
-        output, err := cmd.Output()
-        if err != nil {
-            return false
-        }
-        return strings.Contains(string(output), pkgName)
-    } else if detect.IsDebFamily() {
-        if !quiet {
-            fmt.Printf("Searching for '%s' in apt repositories...\n", pkgName)
-        }
-        cmd := exec.Command("apt-cache", "search", pkgName)
-        output, err := cmd.Output()
-        if err != nil {
-            return false
-        }
-        return strings.Contains(string(output), pkgName)
-    }
-    return false
-}
-
-func systemPackageInstall(pkgName, owner, repo, key string) {
-    if detect.IsRPMFamily() {
-        fmt.Printf("Installing '%s' via dnf...\n", pkgName)
-        cmd := exec.Command("sudo", "dnf", "install", "-y", pkgName)
-        cmd.Stdout = os.Stdout
-        cmd.Stderr = os.Stderr
-        if err := cmd.Run(); err != nil {
-            fmt.Println(utils.Colorize(utils.ColorRed, "dnf installation failed."))
-            return
-        }
-        fmt.Println(utils.Colorize(utils.ColorGreen, "Package installed successfully via dnf."))
-        versionCmd := exec.Command("rpm", "-q", pkgName)
-        versionOut, err := versionCmd.Output()
-        if err != nil {
-            versionOut = []byte("unknown")
-        }
-        version := strings.TrimSpace(string(versionOut))
-        cleanedName := installer.CleanBinaryName(pkgName)
-        if cleanedName != pkgName {
-            for _, dir := range []string{"/usr/bin", "/usr/sbin", "/bin", "/sbin"} {
-                binPath := filepath.Join(dir, pkgName)
-                if _, err := os.Stat(binPath); err == nil {
-                    symlinkPath := "/usr/local/bin/" + cleanedName
-                    os.Remove(symlinkPath)
-                    if err := os.Symlink(binPath, symlinkPath); err == nil {
-                        fmt.Printf("Created symlink: %s -> %s\n", symlinkPath, binPath)
-                    }
-                    break
-                }
-            }
-        }
-        info := &db.PackageInfo{
-            Owner:         owner,
-            Repo:          repo,
-            URL:           fmt.Sprintf("https://github.com/%s/%s", owner, repo),
-            AssetURL:      "",
-            Version:       version,
-            PackageName:   pkgName,
-            BinName:       cleanedName,
-            InstallTime:   time.Now(),
-            LockedVersion: "",
-        }
-        if err := db.AddOrUpdate(key, *info); err != nil && !quiet {
-            fmt.Printf("Warning: could not record package in database: %v\n", err)
-        }
-    } else if detect.IsDebFamily() {
-        fmt.Printf("Installing '%s' via apt...\n", pkgName)
-        updateCmd := exec.Command("sudo", "apt-get", "update")
-        updateCmd.Stdout = os.Stdout
-        updateCmd.Stderr = os.Stderr
-        updateCmd.Run()
-        cmd := exec.Command("sudo", "apt-get", "install", "-y", pkgName)
-        cmd.Stdout = os.Stdout
-        cmd.Stderr = os.Stderr
-        if err := cmd.Run(); err != nil {
-            fmt.Println(utils.Colorize(utils.ColorRed, "apt installation failed."))
-            return
-        }
-        fmt.Println(utils.Colorize(utils.ColorGreen, "Package installed successfully via apt."))
-        versionCmd := exec.Command("dpkg-query", "-W", "-f=${Version}", pkgName)
-        versionOut, err := versionCmd.Output()
-        if err != nil {
-            versionOut = []byte("unknown")
-        }
-        version := strings.TrimSpace(string(versionOut))
-        cleanedName := installer.CleanBinaryName(pkgName)
-        info := &db.PackageInfo{
-            Owner:         owner,
-            Repo:          repo,
-            URL:           fmt.Sprintf("https://github.com/%s/%s", owner, repo),
-            AssetURL:      "",
-            Version:       version,
-            PackageName:   pkgName,
-            BinName:       cleanedName,
-            InstallTime:   time.Now(),
-            LockedVersion: "",
-        }
-        if err := db.AddOrUpdate(key, *info); err != nil && !quiet {
-            fmt.Printf("Warning: could not record package in database: %v\n", err)
-        }
-    }
 }
 
 func runLock(pkg string) {
@@ -635,8 +515,6 @@ func runInstall(url string, isUpdate bool) {
     }
     key := owner + "/" + repo
 
-    isAndroid := detect.IsAndroid()
-
     pkgs, err := db.List()
     if err != nil {
         fmt.Println(utils.Colorize(utils.ColorRed, "Error: "+err.Error()))
@@ -693,39 +571,24 @@ func runInstall(url string, isUpdate bool) {
 
     if release.TagName == "HEAD" {
         fmt.Println(utils.Colorize(utils.ColorRed, "No prebuilt package found for this repository."))
-        if !isAndroid {
-            var resp string
-            fmt.Print("Would you like to clone the repository and try to install the script/executable directly? [y/N]: ")
-            fmt.Scanln(&resp)
-            if resp == "y" || resp == "Y" {
-                repoPath, err := installer.CloneDefaultBranch(owner, repo)
-                if err != nil {
-                    fmt.Println(utils.Colorize(utils.ColorRed, "Error cloning: "+err.Error()))
-                    os.Exit(1)
-                }
-                _, err = installer.FallbackInstall(repoPath, owner, repo)
-                if err != nil {
-                    fmt.Println(utils.Colorize(utils.ColorRed, "Error: "+err.Error()))
-                    os.Exit(1)
-                }
-                fmt.Println(utils.Colorize(utils.ColorGreen, "Installation complete."))
-                return
+        var resp string
+        fmt.Print("Would you like to clone the repository and try to install the script/executable directly? [y/N]: ")
+        fmt.Scanln(&resp)
+        if resp == "y" || resp == "Y" {
+            repoPath, err := installer.CloneDefaultBranch(owner, repo)
+            if err != nil {
+                fmt.Println(utils.Colorize(utils.ColorRed, "Error cloning: "+err.Error()))
+                os.Exit(1)
             }
-            if systemPackageSearch(repo) {
-                fmt.Printf("Package '%s' found in system repositories.\n", repo)
-                fmt.Print("Would you like to install it via system package manager? [y/N]: ")
-                fmt.Scanln(&resp)
-                if resp == "y" || resp == "Y" {
-                    systemPackageInstall(repo, owner, repo, key)
-                    return
-                }
-            } else {
-                fmt.Println("No matching package found in system repositories.")
+            _, err = installer.FallbackInstall(repoPath, owner, repo)
+            if err != nil {
+                fmt.Println(utils.Colorize(utils.ColorRed, "Error: "+err.Error()))
+                os.Exit(1)
             }
-            fmt.Println(utils.Colorize(utils.ColorRed, "Installation failed."))
-        } else {
-            fmt.Println("No prebuilt package available for Android.")
+            fmt.Println(utils.Colorize(utils.ColorGreen, "Installation complete."))
+            return
         }
+        fmt.Println(utils.Colorize(utils.ColorRed, "Installation cancelled."))
         return
     }
 
@@ -750,20 +613,12 @@ func runInstall(url string, isUpdate bool) {
     }
 
     arch := detect.GetArch()
-    prettyName := detect.GetDisplayName()
     if !quiet {
-        fmt.Printf("Detected system: %s / %s\n", prettyName, arch)
+        fmt.Printf("Architecture: %s\n", arch)
         fmt.Printf("Release: %s\n", release.TagName)
     }
 
-    assetDistro := "linux"
-    if detect.IsRPMFamily() {
-        assetDistro = "fedora"
-    } else if detect.IsDebFamily() {
-        assetDistro = "debian"
-    }
-
-    assetResult, candidates := installer.FindAsset(release, assetDistro, arch)
+    assetResult, candidates := installer.FindAsset(release, arch)
     var selectedAsset string
     var userSelected bool
 
@@ -790,7 +645,7 @@ func runInstall(url string, isUpdate bool) {
     } else if assetResult == "" {
         fmt.Println(utils.Colorize(utils.ColorYellow, "No compatible asset found in the latest stable release."))
         fmt.Println("Searching for a compatible asset in other releases (including prereleases)...")
-        fallbackRelease, fallbackAsset, err := github.FindFirstReleaseWithCompatibleAsset(owner, repo, assetDistro, arch)
+        fallbackRelease, fallbackAsset, err := github.FindFirstReleaseWithCompatibleAsset(owner, repo, arch)
         if err != nil {
             fmt.Println(utils.Colorize(utils.ColorRed, "Error searching other releases: "+err.Error()))
         }
@@ -807,45 +662,29 @@ func runInstall(url string, isUpdate bool) {
                 userSelected = false
                 release = fallbackRelease
             } else {
-                fmt.Println("Using fallback to system package manager...")
-                if !isAndroid {
-                    if systemPackageSearch(repo) {
-                        fmt.Printf("Package '%s' found in system repositories.\n", repo)
-                        fmt.Print("Would you like to install it via system package manager? [y/N]: ")
-                        var resp3 string
-                        fmt.Scanln(&resp3)
-                        if resp3 == "y" || resp3 == "Y" {
-                            systemPackageInstall(repo, owner, repo, key)
-                            return
-                        }
-                    } else {
-                        fmt.Println("No matching package found in system repositories.")
-                    }
-                    fmt.Println(utils.Colorize(utils.ColorRed, "Installation failed."))
-                } else {
-                    fmt.Println("No prebuilt package available for Android.")
-                }
+                fmt.Println(utils.Colorize(utils.ColorRed, "Installation cancelled."))
                 return
             }
         } else {
             fmt.Println(utils.Colorize(utils.ColorRed, "No prebuilt package found for this repository."))
-            if !isAndroid {
-                if systemPackageSearch(repo) {
-                    fmt.Printf("Package '%s' found in system repositories.\n", repo)
-                    fmt.Print("Would you like to install it via system package manager? [y/N]: ")
-                    var resp4 string
-                    fmt.Scanln(&resp4)
-                    if resp4 == "y" || resp4 == "Y" {
-                        systemPackageInstall(repo, owner, repo, key)
-                        return
-                    }
-                } else {
-                    fmt.Println("No matching package found in system repositories.")
+            fmt.Print("Would you like to clone the repository and try to install the script/executable directly? [y/N]: ")
+            var resp string
+            fmt.Scanln(&resp)
+            if resp == "y" || resp == "Y" {
+                repoPath, err := installer.CloneDefaultBranch(owner, repo)
+                if err != nil {
+                    fmt.Println(utils.Colorize(utils.ColorRed, "Error cloning: "+err.Error()))
+                    os.Exit(1)
                 }
-                fmt.Println(utils.Colorize(utils.ColorRed, "Installation failed."))
-            } else {
-                fmt.Println("No prebuilt package available for Android.")
+                _, err = installer.FallbackInstall(repoPath, owner, repo)
+                if err != nil {
+                    fmt.Println(utils.Colorize(utils.ColorRed, "Error: "+err.Error()))
+                    os.Exit(1)
+                }
+                fmt.Println(utils.Colorize(utils.ColorGreen, "Installation complete."))
+                return
             }
+            fmt.Println(utils.Colorize(utils.ColorRed, "Installation cancelled."))
             return
         }
     } else {
@@ -887,28 +726,29 @@ func runInstall(url string, isUpdate bool) {
         }
     }
 
-    _, err = installer.DownloadAndInstall(selectedAsset, assetDistro, owner, repo, release.TagName, description)
+    _, err = installer.DownloadAndInstall(selectedAsset, owner, repo, release.TagName, description)
     if err != nil {
         if strings.Contains(err.Error(), "no executable files found in archive") {
             fmt.Println(utils.Colorize(utils.ColorRed, "The downloaded archive contains no executable file."))
             fmt.Println("This repository may only provide source code or auxiliary files.")
-            if !isAndroid {
-                if systemPackageSearch(repo) {
-                    fmt.Printf("Package '%s' found in system repositories.\n", repo)
-                    fmt.Print("Would you like to install it via system package manager? [y/N]: ")
-                    var resp6 string
-                    fmt.Scanln(&resp6)
-                    if resp6 == "y" || resp6 == "Y" {
-                        systemPackageInstall(repo, owner, repo, key)
-                        return
-                    }
-                } else {
-                    fmt.Println("No matching package found in system repositories.")
+            fmt.Print("Would you like to clone the repository and try to install the script/executable directly? [y/N]: ")
+            var resp6 string
+            fmt.Scanln(&resp6)
+            if resp6 == "y" || resp6 == "Y" {
+                repoPath, err := installer.CloneDefaultBranch(owner, repo)
+                if err != nil {
+                    fmt.Println(utils.Colorize(utils.ColorRed, "Error cloning: "+err.Error()))
+                    os.Exit(1)
                 }
-                fmt.Println(utils.Colorize(utils.ColorRed, "Installation failed."))
-            } else {
-                fmt.Println("No prebuilt package available for Android.")
+                _, err = installer.FallbackInstall(repoPath, owner, repo)
+                if err != nil {
+                    fmt.Println(utils.Colorize(utils.ColorRed, "Error: "+err.Error()))
+                    os.Exit(1)
+                }
+                fmt.Println(utils.Colorize(utils.ColorGreen, "Installation complete."))
+                return
             }
+            fmt.Println(utils.Colorize(utils.ColorRed, "Installation failed."))
             return
         }
         fmt.Println(utils.Colorize(utils.ColorRed, "Error: installation failed: "+err.Error()))
@@ -966,66 +806,6 @@ func runRemove(arg string) {
             fmt.Println("Removal cancelled.")
             return
         }
-    }
-
-    assetURL := info.AssetURL
-    isSystemPkg := false
-
-    if strings.HasSuffix(assetURL, ".rpm") || strings.HasSuffix(assetURL, ".deb") {
-        isSystemPkg = true
-    } else if assetURL == "" && info.Version != "unknown" && info.Version != "local" {
-        isSystemPkg = true
-    }
-
-    if isSystemPkg {
-        if strings.HasSuffix(assetURL, ".rpm") || (assetURL == "" && detect.IsRPMFamily()) {
-            pkgName := info.PackageName
-            if pkgName == "" {
-                pkgName = info.BinName
-            }
-            fmt.Printf("Removing '%s' via rpm...\n", pkgName)
-            cmd := exec.Command("rpm", "-e", pkgName)
-            output, err := cmd.CombinedOutput()
-            if err != nil {
-                if force {
-                    fmt.Println(utils.Colorize(utils.ColorYellow, "rpm removal failed, but --force was used. Removing database entry only."))
-                } else {
-                    fmt.Println(utils.Colorize(utils.ColorRed, "rpm removal failed:"))
-                    fmt.Println(string(output))
-                    os.Exit(1)
-                }
-            } else {
-                fmt.Println(utils.Colorize(utils.ColorGreen, "Package removed successfully via rpm."))
-            }
-        } else if strings.HasSuffix(assetURL, ".deb") || (assetURL == "" && detect.IsDebFamily()) {
-            pkgName := info.PackageName
-            if pkgName == "" {
-                pkgName = info.BinName
-            }
-            fmt.Printf("Removing '%s' via dpkg...\n", pkgName)
-            cmd := exec.Command("dpkg", "-r", pkgName)
-            output, err := cmd.CombinedOutput()
-            if err != nil {
-                if force {
-                    fmt.Println(utils.Colorize(utils.ColorYellow, "dpkg removal failed, but --force was used. Removing database entry only."))
-                } else {
-                    fmt.Println(utils.Colorize(utils.ColorRed, "dpkg removal failed:"))
-                    fmt.Println(string(output))
-                    os.Exit(1)
-                }
-            } else {
-                fmt.Println(utils.Colorize(utils.ColorGreen, "Package removed successfully via dpkg."))
-            }
-        } else {
-            fmt.Println(utils.Colorize(utils.ColorYellow, "No specific removal method, removing database entry only."))
-        }
-
-        if err := db.Remove(key); err != nil {
-            fmt.Println(utils.Colorize(utils.ColorRed, "Error: "+err.Error()))
-            os.Exit(1)
-        }
-        fmt.Println(utils.Colorize(utils.ColorGreen, "Removal complete."))
-        return
     }
 
     binName := info.BinName

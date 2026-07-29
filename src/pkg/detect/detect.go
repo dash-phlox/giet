@@ -102,22 +102,6 @@ func checkIDLike(target string) bool {
     return false
 }
 
-func IsDebFamily() bool {
-    id := getDistroID()
-    if id == "debian" {
-        return true
-    }
-    return checkIDLike("debian")
-}
-
-func IsRPMFamily() bool {
-    id := getDistroID()
-    if id == "fedora" || id == "rhel" {
-        return true
-    }
-    return checkIDLike("rhel") || checkIDLike("fedora")
-}
-
 func GetDisplayName() string {
     file, err := os.Open("/etc/os-release")
     if err != nil {
