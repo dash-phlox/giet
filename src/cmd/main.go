@@ -14,7 +14,7 @@ import (
     "giet/pkg/utils"
 )
 
-const version = "0.5.1"
+const version = "0.5.2"
 
 var (
     quiet        bool

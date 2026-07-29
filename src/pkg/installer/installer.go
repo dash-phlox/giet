@@ -224,6 +224,10 @@ func FindAsset(release *github.GitHubRelease, arch string) (string, []AssetInfo)
             }
         }
 
+        if strings.HasSuffix(lowerName, ".deb") || strings.HasSuffix(lowerName, ".rpm") {
+            continue
+        }
+
         containsOtherArch := false
         for _, a := range allArchs {
             if strings.Contains(lowerName, a) {
@@ -1056,6 +1060,26 @@ Categories=Utility;
     return baseName, nil
 }
 
+func safeJoin(base, sub string) (string, error) {
+    absBase, err := filepath.Abs(base)
+    if err != nil {
+        return "", err
+    }
+    target := filepath.Join(absBase, sub)
+    absTarget, err := filepath.Abs(target)
+    if err != nil {
+        return "", err
+    }
+    rel, err := filepath.Rel(absBase, absTarget)
+    if err != nil {
+        return "", err
+    }
+    if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+        return "", fmt.Errorf("path traversal attempt: %s", sub)
+    }
+    return absTarget, nil
+}
+
 func installTarball(tmpPath, assetURL, owner, repo, description string) (string, error) {
     extractDir, err := os.MkdirTemp("", "giet-extract-*")
     if err != nil {
@@ -1116,7 +1140,11 @@ func installTarball(tmpPath, assetURL, owner, repo, description string) (string,
             spinner.Stop()
             return "", err
         }
-        target := filepath.Join(extractDir, hdr.Name)
+        target, err := safeJoin(extractDir, hdr.Name)
+        if err != nil {
+            spinner.Stop()
+            return "", err
+        }
         switch hdr.Typeflag {
         case tar.TypeDir:
             if err := os.MkdirAll(target, 0755); err != nil {
@@ -1221,7 +1249,12 @@ func installZip(tmpPath, assetURL, owner, repo, description string) (string, err
             spinner.Stop()
             return "", err
         }
-        target := filepath.Join(extractDir, f.Name)
+        target, err := safeJoin(extractDir, f.Name)
+        if err != nil {
+            rc.Close()
+            spinner.Stop()
+            return "", err
+        }
         if f.FileInfo().IsDir() {
             os.MkdirAll(target, f.Mode())
         } else {

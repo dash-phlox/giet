@@ -5,6 +5,7 @@ import (
     "fmt"
     "os"
     "path/filepath"
+    "syscall"
     "time"
 )
 
@@ -28,13 +29,47 @@ func getDBPath() string {
     return filepath.Join(homeDir, ".local", "var", "lib", "giet", "installed.json")
 }
 
-func EnsureDBDir() error {
+func getLockPath() string {
+    return getDBPath() + ".lock"
+}
+
+func ensureDir() error {
     dbPath := getDBPath()
     dir := filepath.Dir(dbPath)
     return os.MkdirAll(dir, 0755)
 }
 
-func Load() (map[string]PackageInfo, error) {
+var lockFile *os.File
+
+func acquireLock() error {
+    lockPath := getLockPath()
+    f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0644)
+    if err != nil {
+        return err
+    }
+    if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+        f.Close()
+        return err
+    }
+    lockFile = f
+    return nil
+}
+
+func releaseLock() error {
+    if lockFile == nil {
+        return nil
+    }
+    if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
+        return err
+    }
+    if err := lockFile.Close(); err != nil {
+        return err
+    }
+    lockFile = nil
+    return nil
+}
+
+func loadData() (map[string]PackageInfo, error) {
     dbPath := getDBPath()
     data := make(map[string]PackageInfo)
     if _, err := os.Stat(dbPath); os.IsNotExist(err) {
@@ -49,7 +84,7 @@ func Load() (map[string]PackageInfo, error) {
     return data, err
 }
 
-func Save(data map[string]PackageInfo) error {
+func saveData(data map[string]PackageInfo) error {
     dbPath := getDBPath()
     f, err := os.Create(dbPath)
     if err != nil {
@@ -59,20 +94,45 @@ func Save(data map[string]PackageInfo) error {
     return json.NewEncoder(f).Encode(data)
 }
 
-func AddOrUpdate(key string, info PackageInfo) error {
-    if err := EnsureDBDir(); err != nil {
+func EnsureDBDir() error {
+    return ensureDir()
+}
+
+func Load() (map[string]PackageInfo, error) {
+    if err := acquireLock(); err != nil {
+        return nil, err
+    }
+    defer releaseLock()
+    return loadData()
+}
+
+func Save(data map[string]PackageInfo) error {
+    if err := acquireLock(); err != nil {
         return err
     }
-    data, err := Load()
+    defer releaseLock()
+    return saveData(data)
+}
+
+func AddOrUpdate(key string, info PackageInfo) error {
+    if err := acquireLock(); err != nil {
+        return err
+    }
+    defer releaseLock()
+    data, err := loadData()
     if err != nil {
         return err
     }
     data[key] = info
-    return Save(data)
+    return saveData(data)
 }
 
 func Remove(key string) error {
-    data, err := Load()
+    if err := acquireLock(); err != nil {
+        return err
+    }
+    defer releaseLock()
+    data, err := loadData()
     if err != nil {
         return err
     }
@@ -80,7 +140,7 @@ func Remove(key string) error {
         return fmt.Errorf("package not found in giet database: %s", key)
     }
     delete(data, key)
-    return Save(data)
+    return saveData(data)
 }
 
 func List() (map[string]PackageInfo, error) {
