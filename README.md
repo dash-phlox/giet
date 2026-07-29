@@ -54,7 +54,7 @@ giet -i /path/to/package.tar.gz
 ### List installed packages
 
 ```sh
-giet -ls
+giet -l
 ```
 
 ### Remove a package
