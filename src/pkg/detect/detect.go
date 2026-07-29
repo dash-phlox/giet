@@ -59,16 +59,6 @@ func normalizeDistroID(id string) string {
     }
 }
 
-func IsAndroid() bool {
-    if _, err := os.Stat("/data/data/com.termux"); err == nil {
-        return true
-    }
-    if os.Getenv("ANDROID_ROOT") != "" {
-        return true
-    }
-    return false
-}
-
 func IsNixOS() bool {
     if _, err := os.Stat("/etc/NIXOS"); err == nil {
         return true
