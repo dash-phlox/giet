@@ -42,6 +42,9 @@ func ensureDir() error {
 var lockFile *os.File
 
 func acquireLock() error {
+    if err := ensureDir(); err != nil {
+        return err
+    }
     lockPath := getLockPath()
     f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0644)
     if err != nil {
