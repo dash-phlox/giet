@@ -1,7 +1,7 @@
 # Giet
 
 **Giet** is a GitHub‑based package manager for Linux.
-It installs pre‑built binaries directly from GitHub releases, supports local files (tarballs, zips, AppImages, RPMs), and offers basic package management (install, remove, update, lock/unlock).
+It installs pre‑built binaries directly from GitHub releases, supports local files (tarballs, zips, AppImages), and offers basic package management (install, remove, update, lock/unlock).
 
 ## Features
 
