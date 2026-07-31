@@ -6,6 +6,7 @@ import (
     "bufio"
     "bytes"
     "compress/gzip"
+    "debug/elf"
     "fmt"
     "io"
     "net/http"
@@ -126,22 +127,10 @@ func downloadWithProgress(url string, destFile *os.File) error {
     return nil
 }
 
-func platformFilter(name string) bool {
-    lower := strings.ToLower(name)
-    if strings.Contains(lower, "linux") {
-        return true
-    }
-    if strings.Contains(lower, "darwin") || strings.Contains(lower, "macos") || strings.Contains(lower, "mac") ||
-        strings.Contains(lower, "windows") || strings.Contains(lower, "win32") || strings.Contains(lower, "win") {
-        return false
-    }
-    return true
-}
-
 func isValidLinuxAsset(name string) bool {
     lower := strings.ToLower(name)
     forbiddenOS := []string{
-        "darwin", "macos", "windows", "win32", "win64", "win",
+        "darwin", "mac", "macos", "windows", "win32", "win64", "win",
         "freebsd", "openbsd", "netbsd", "dragonfly", "dragonflybsd",
         "haiku", "omnios", "solaris", "illumos",
     }
@@ -156,6 +145,8 @@ func isValidLinuxAsset(name string) bool {
         }
     } else {
         if strings.Contains(lower, "gnu") || strings.Contains(lower, "glibc") {
+            return false
+        } else if strings.HasSuffix(lower, ".appimage") {
             return false
         }
     }
@@ -217,17 +208,6 @@ func FindAsset(release *github.GitHubRelease, arch string) (string, []AssetInfo)
             continue
         }
 
-        isAppImage := strings.HasSuffix(lowerName, ".appimage")
-        if !isAppImage {
-            if !platformFilter(name) {
-                continue
-            }
-        }
-
-        if strings.HasSuffix(lowerName, ".deb") || strings.HasSuffix(lowerName, ".rpm") {
-            continue
-        }
-
         containsOtherArch := false
         for _, a := range allArchs {
             if strings.Contains(lowerName, a) {
@@ -252,6 +232,7 @@ func FindAsset(release *github.GitHubRelease, arch string) (string, []AssetInfo)
         var matchesArch bool
         var isArchSpecific bool
 
+        isAppImage := strings.HasSuffix(lowerName, ".appimage")
         switch {
         case isAppImage:
             assetType = "appimage"
@@ -1209,14 +1190,8 @@ func installTarball(tmpPath, assetURL, owner, repo, description string) (string,
         return "", err
     }
 
-    if !detect.HasGLIBC() {
-        fileCmd := exec.Command("file", execPath)
-        out, _ := fileCmd.Output()
-        outStr := string(out)
-        if strings.Contains(outStr, "interpreter") && strings.Contains(outStr, "ld-linux") {
-            fmt.Println(utils.Colorize(utils.ColorRed, "Error: The binary requires glibc, but your system uses musl."))
-            return "", fmt.Errorf("incompatible binary (glibc on musl)")
-        }
+    if err := checkGlibcCompatibility(execPath); err != nil {
+        return "", err
     }
 
     rawBinName := filepath.Base(execPath)
@@ -1292,14 +1267,8 @@ func installZip(tmpPath, assetURL, owner, repo, description string) (string, err
         }
     }
 
-    if !detect.HasGLIBC() {
-        fileCmd := exec.Command("file", execPath)
-        out, _ := fileCmd.Output()
-        outStr := string(out)
-        if strings.Contains(outStr, "interpreter") && strings.Contains(outStr, "ld-linux") {
-            fmt.Println(utils.Colorize(utils.ColorRed, "Error: The binary requires glibc, but your system uses musl."))
-            return "", fmt.Errorf("incompatible binary (glibc on musl)")
-        }
+    if err := checkGlibcCompatibility(execPath); err != nil {
+        return "", err
     }
 
     rawBinName := filepath.Base(execPath)
@@ -1431,6 +1400,34 @@ func findExecutable(rootDir, repo string) (string, error) {
     })
 
     return candidates[0].path, nil
+}
+
+func checkGlibcCompatibility(path string) error {
+    if detect.HasGLIBC() {
+        return nil
+    }
+    f, err := elf.Open(path)
+    if err != nil {
+        return nil
+    }
+    defer f.Close()
+    var interp string
+    for _, prog := range f.Progs {
+        if prog.Type == elf.PT_INTERP {
+            data := make([]byte, prog.Filesz)
+            if _, err := prog.ReadAt(data, 0); err == nil {
+                interp = string(data[:len(data)-1])
+                break
+            }
+        }
+    }
+    if interp == "" {
+        return nil
+    }
+    if strings.Contains(interp, "ld-linux") {
+        return fmt.Errorf("binary requires glibc (interpreter %s), but system uses musl", interp)
+    }
+    return nil
 }
 
 func copyFile(src, dst string) error {
