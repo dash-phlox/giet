@@ -597,6 +597,12 @@ func runUpdateAll() {
 			}
 			continue
 		}
+		if info.Owner == "local" || info.URL == "" {
+			if !quiet {
+				fmt.Printf(utils.Colorize(utils.ColorYellow, "Skipping %s (local package, cannot update)\n"), key)
+			}
+			continue
+		}
 		url := fmt.Sprintf("https://github.com/%s/%s", info.Owner, info.Repo)
 		if !quiet {
 			fmt.Printf("Updating %s...\n", key)
@@ -689,6 +695,11 @@ func runUpdate(arg string) {
 	if !exists {
 		fmt.Println(utils.Colorize(utils.ColorRed, fmt.Sprintf("Error: package not found in database: %s", key)))
 		os.Exit(1)
+	}
+
+	if info.Owner == "local" || info.URL == "" {
+		fmt.Println(utils.Colorize(utils.ColorRed, fmt.Sprintf("Error: Package %s is a local package and cannot be updated.", key)))
+		return
 	}
 
 	if info.LockedVersion != "" {
