@@ -17,10 +17,11 @@ import (
 	"github.com/spf13/pflag"
 )
 
-const version = "0.6.2"
+const version = "0.7.0"
 
 var (
 	quiet        bool
+	verbose      bool
 	force        bool
 	yes          bool
 	installFlag  bool
@@ -55,6 +56,7 @@ func main() {
 	fs.Usage = func() {}
 
 	fs.BoolVarP(&quiet, "quiet", "q", false, "Show minimal output")
+	fs.BoolVarP(&verbose, "verbose", "v", false, "Enable verbose debug logging")
 	fs.BoolVarP(&yes, "yes", "y", false, "Auto-confirm prompts")
 	fs.BoolVarP(&force, "force", "f", false, "Force removal even if removal fails (with -r)")
 	fs.StringVar(&forceVersion, "force-version", "", "Install specific version of a package (with -i)")
@@ -67,7 +69,7 @@ func main() {
 	fs.StringVar(&lockPkg, "lock", "", "Lock a package to its current version")
 	fs.BoolVar(&unlockFlag, "unlock", false, "Unlock packages")
 
-	fs.BoolVarP(&showVersion, "version", "v", false, "Show giet version")
+	fs.BoolVar(&showVersion, "version", false, "Show giet version")
 	fs.BoolVarP(&showHelp, "help", "h", false, "Show this help message")
 
 	err := fs.Parse(os.Args[1:])
@@ -130,6 +132,7 @@ func main() {
 	}
 
 	installer.SetQuiet(quiet)
+	installer.SetVerbose(verbose)
 	installer.AutoYes = yes
 
 	args := fs.Args()
@@ -195,18 +198,19 @@ Commands:
   -i,  --install <url|file...>     Install one or more packages (GitHub URL, owner/repo, or local file)
   -r,  --remove  <pkg...>          Uninstall one or more installed packages
   -u,  --update  [pkg...]          Update one or more packages, or all if none given
-  --lock         <pkg>             Lock a package to its current version
-  --unlock       <pkg...>          Remove the lock from one or more packages
+       --lock    <pkg>             Lock a package to its current version
+       --unlock  <pkg...>          Remove the lock from one or more packages
   -l,  --list                      List installed packages via Giet
 
 Options:
   -q,  --quiet                     Show minimal output
+  -v,  --verbose                   Show verbose (detailed) logging
   -y,  --yes                       Auto-confirm prompts
   -f,  --force                     Force removal even if removal fails (with -r)
   -fv, --force-version             Install specific version of a package (with -i)
 
 Giet:
-  -v,  --version                   Show giet version
+       --version                   Show giet version
   -h,  --help                      Show this help message`)
 }
 
@@ -522,7 +526,7 @@ func runInstall(url string, isUpdate bool) {
 		}
 	}
 
-	if !yes {
+	if !yes && !userSelected {
 		action := "Install"
 		if isUpdate {
 			action = "Update"

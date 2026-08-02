@@ -34,7 +34,7 @@ sudo mv giet /usr/local/bin/
 ## Usage
 
 ```sh
-giet -h
+giet --help
 ```
 
 ### Install a package from GitHub
@@ -49,6 +49,16 @@ giet -i owner/repo
 
 ```sh
 giet -i /path/to/package.tar.gz
+```
+
+### Install a package & show detailed logging
+
+```sh
+giet -iv https://github.com/owner/repo
+# or
+giet -iv owner/repo
+# or
+giet -iv /path/to/package.tar.gz
 ```
 
 ### List installed packages
@@ -70,6 +80,7 @@ giet -u package-name
 ```
 
 ### Update all packages
+
 ```sh
 giet -u
 ```
@@ -89,7 +100,7 @@ giet --unlock package-name
 ### Show version
 
 ```sh
-giet -v
+giet --version
 ```
 
 ## Supported Formats
