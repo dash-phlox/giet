@@ -757,10 +757,15 @@ exec "%s" "$@"
 	createDesktop := AutoYes
 	if !createDesktop && !QuietMode {
 		fmt.Print("Create desktop entry? [y/N]: ")
-		var resp string
-		fmt.Scanln(&resp)
-		if resp == "y" || resp == "Y" {
-			createDesktop = true
+		scanner := bufio.NewScanner(os.Stdin)
+		if scanner.Scan() {
+			resp := strings.ToLower(scanner.Text())
+			debugPrintf("User input for desktop entry: '%s'", resp)
+			if resp == "y" {
+				createDesktop = true
+			}
+		} else {
+			debugPrintf("Failed to read user input for desktop entry: %v", scanner.Err())
 		}
 	}
 	if createDesktop {
@@ -787,7 +792,7 @@ exec "%s" "$@"
 		} else {
 			iconPath = binName
 			if !QuietMode {
-				fmt.Println(utils.Colorize(utils.ColorYellow, "No icon found, using icon name '"+binName+"' (may not appear)"))
+				fmt.Println(utils.Colorize(utils.ColorYellow, "No icon found, using icon name '"+binName+"' (may not appear)."))
 			}
 		}
 

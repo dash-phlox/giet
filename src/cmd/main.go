@@ -21,7 +21,7 @@ import (
 	"github.com/spf13/pflag"
 )
 
-const version = "0.7.1"
+const version = "0.7.2"
 
 var (
 	quiet        bool
