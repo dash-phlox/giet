@@ -1,9 +1,13 @@
 package main
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,7 +21,7 @@ import (
 	"github.com/spf13/pflag"
 )
 
-const version = "0.7.0"
+const version = "0.7.1"
 
 var (
 	quiet        bool
@@ -34,6 +38,7 @@ var (
 	lockPkg      string
 	showHelp     bool
 	showVersion  bool
+	selfUpdate   bool
 )
 
 func getBinDir() string {
@@ -69,14 +74,27 @@ func main() {
 	fs.StringVar(&lockPkg, "lock", "", "Lock a package to its current version")
 	fs.BoolVar(&unlockFlag, "unlock", false, "Unlock packages")
 
-	fs.BoolVar(&showVersion, "version", false, "Show giet version")
 	fs.BoolVarP(&showHelp, "help", "h", false, "Show this help message")
+	fs.BoolVar(&selfUpdate, "self-update", false, "Update giet itself")
+	fs.BoolVar(&showVersion, "version", false, "Show giet version")
 
 	err := fs.Parse(os.Args[1:])
 	if err != nil {
 		fmt.Println(utils.Colorize(utils.ColorRed, "Error: "+err.Error()))
 		fmt.Println("Run 'giet -h' for help.")
 		os.Exit(1)
+	}
+
+	if selfUpdate {
+		updated, err := runSelfUpdate()
+		if err != nil {
+			fmt.Println(utils.Colorize(utils.ColorRed, "Self-update failed: "+err.Error()))
+			os.Exit(1)
+		}
+		if updated {
+			fmt.Println(utils.Colorize(utils.ColorGreen, "Giet updated successfully."))
+		}
+		return
 	}
 
 	if fs.NFlag() == 0 && len(fs.Args()) == 0 {
@@ -210,8 +228,9 @@ Options:
   -fv, --force-version             Install specific version of a package (with -i)
 
 Giet:
-       --version                   Show giet version
-  -h,  --help                      Show this help message`)
+  -h,  --help                      Show this help message
+       --self-update               Update giet itself
+       --version                   Show giet version`)
 }
 
 func isLocalFile(path string) bool {
@@ -770,4 +789,330 @@ func resolvePackageKey(arg string, pkgs map[string]db.PackageInfo) string {
 		}
 	}
 	return ""
+}
+
+func getVersionFromSource(repoDir string) (string, error) {
+	mainPath := filepath.Join(repoDir, "src", "cmd", "main.go")
+	content, err := os.ReadFile(mainPath)
+	if err != nil {
+		return "", err
+	}
+	const prefix = `const version = "`
+	start := strings.Index(string(content), prefix)
+	if start == -1 {
+		return "", fmt.Errorf("version constant not found")
+	}
+	start += len(prefix)
+	end := strings.Index(string(content)[start:], `"`)
+	if end == -1 {
+		return "", fmt.Errorf("version constant value not closed")
+	}
+	return string(content)[start : start+end], nil
+}
+
+func compareVersions(a, b string) int {
+	partsA := strings.Split(a, ".")
+	partsB := strings.Split(b, ".")
+	maxLen := len(partsA)
+	if len(partsB) > maxLen {
+		maxLen = len(partsB)
+	}
+	for i := 0; i < maxLen; i++ {
+		var vA, vB int
+		if i < len(partsA) {
+			vA, _ = strconv.Atoi(partsA[i])
+		}
+		if i < len(partsB) {
+			vB, _ = strconv.Atoi(partsB[i])
+		}
+		if vA > vB {
+			return 1
+		}
+		if vA < vB {
+			return -1
+		}
+	}
+	return 0
+}
+
+func downloadSourceTarball(destDir string) error {
+	url := "https://github.com/dash-phlox/giet/archive/refs/heads/main.tar.gz"
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	gzr, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return err
+	}
+	defer gzr.Close()
+	tr := tar.NewReader(gzr)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destDir, hdr.Name)
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			out, err := os.Create(target)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				out.Close()
+				return err
+			}
+			out.Close()
+		}
+	}
+	return nil
+}
+
+func runSelfUpdate() (bool, error) {
+	if _, err := exec.LookPath("go"); err != nil {
+		return false, fmt.Errorf("go is required but not found in PATH.\nPlease install Go from your distro's package manager or from https://go.dev/dl")
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return false, fmt.Errorf("failed to get executable path: %w", err)
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return false, fmt.Errorf("failed to resolve symlinks: %w", err)
+	}
+
+	dir := filepath.Dir(exe)
+	if info, err := os.Stat(dir); err != nil || info.Mode().Perm()&0200 == 0 {
+		if os.Geteuid() != 0 {
+			fmt.Println("Insufficient permissions. Restarting with sudo...")
+			cmd := exec.Command("sudo", append([]string{os.Args[0], "--self-update"}, os.Args[1:]...)...)
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			err := cmd.Run()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Self-update failed: %v\n", err)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
+		return false, fmt.Errorf("directory %s is not writable", dir)
+	}
+
+	tempDir, err := os.MkdirTemp("", "giet-self-update-*")
+	if err != nil {
+		return false, fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	repoDir := filepath.Join(tempDir, "giet")
+
+	if _, err := exec.LookPath("git"); err == nil {
+		if !quiet {
+			fmt.Println("Cloning latest source with git...")
+		}
+		cmd := exec.Command("git", "clone", "--depth", "1", "https://github.com/dash-phlox/giet.git", repoDir)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return false, fmt.Errorf("git clone failed: %w", err)
+		}
+	} else {
+		if !quiet {
+			fmt.Println("git not found, downloading source tarball...")
+		}
+		if err := downloadSourceTarball(repoDir); err != nil {
+			return false, fmt.Errorf("failed to download source tarball: %w", err)
+		}
+		entries, err := os.ReadDir(repoDir)
+		if err != nil {
+			return false, err
+		}
+		if len(entries) == 1 && entries[0].IsDir() {
+			inner := filepath.Join(repoDir, entries[0].Name())
+			innerEntries, err := os.ReadDir(inner)
+			if err != nil {
+				return false, err
+			}
+			for _, e := range innerEntries {
+				src := filepath.Join(inner, e.Name())
+				dst := filepath.Join(repoDir, e.Name())
+				if err := os.Rename(src, dst); err != nil {
+					if err := copyRecursive(src, dst); err != nil {
+						return false, err
+					}
+				}
+			}
+			if err := os.RemoveAll(inner); err != nil {
+				return false, err
+			}
+		}
+	}
+
+	modDir := filepath.Join(repoDir, "src")
+	if _, err := os.Stat(modDir); err != nil {
+		modDir = repoDir
+	}
+	modFile := filepath.Join(modDir, "go.mod")
+	if _, err := os.Stat(modFile); err != nil {
+		if !quiet {
+			fmt.Printf("go.mod not found, running `go mod init giet` in %s\n", modDir)
+		}
+		initCmd := exec.Command("go", "mod", "init", "giet")
+		initCmd.Dir = modDir
+		initCmd.Stdout = os.Stdout
+		initCmd.Stderr = os.Stderr
+		if err := initCmd.Run(); err != nil {
+			return false, fmt.Errorf("go mod init failed: %w", err)
+		}
+	}
+
+	if !quiet {
+		fmt.Printf("Running go mod tidy in %s\n", modDir)
+	}
+	tidyCmd := exec.Command("go", "mod", "tidy")
+	tidyCmd.Dir = modDir
+	tidyCmd.Stdout = os.Stdout
+	tidyCmd.Stderr = os.Stderr
+	if err := tidyCmd.Run(); err != nil {
+		return false, fmt.Errorf("go mod tidy failed: %w", err)
+	}
+
+	remoteVersion, err := getVersionFromSource(repoDir)
+	if err != nil {
+		return false, fmt.Errorf("failed to read remote version: %w", err)
+	}
+
+	if compareVersions(remoteVersion, version) <= 0 {
+		if !quiet {
+			fmt.Println(utils.Colorize(utils.ColorYellow, fmt.Sprintf("Already at latest version %s", version)))
+		}
+		return false, nil
+	}
+	if !quiet {
+		fmt.Printf("Updating from %s to %s\n", version, remoteVersion)
+	}
+
+	if !quiet {
+		fmt.Println("Building giet...")
+	}
+	buildCmd := exec.Command("go", "build", "-ldflags=-s -w", "-o", "../giet", "./cmd")
+	buildCmd.Dir = modDir
+	buildCmd.Stdout = os.Stdout
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		return false, fmt.Errorf("go build failed: %w", err)
+	}
+
+	newBinary := filepath.Join(repoDir, "giet")
+	if _, err := os.Stat(newBinary); err != nil {
+		return false, fmt.Errorf("build did not produce a binary")
+	}
+
+	if err := os.Rename(newBinary, exe); err != nil {
+		if !quiet {
+			fmt.Printf("os.Rename failed: %v, trying mv -f...\n", err)
+		}
+		cmd := exec.Command("mv", "-f", newBinary, exe)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return false, fmt.Errorf("failed to replace binary: %w (output: %s)", err, out)
+		}
+	}
+	if err := os.Chmod(exe, 0755); err != nil {
+		return false, fmt.Errorf("failed to set permissions: %w", err)
+	}
+
+	if !quiet {
+		commit := getLatestCommitHash(repoDir)
+		fmt.Printf("Updated to version %s (commit %s)\n", remoteVersion, commit)
+	}
+	return true, nil
+}
+
+func getLatestCommitHash(repoDir string) string {
+	if _, err := exec.LookPath("git"); err == nil {
+		cmd := exec.Command("git", "rev-parse", "--short", "HEAD")
+		cmd.Dir = repoDir
+		out, err := cmd.Output()
+		if err == nil {
+			return strings.TrimSpace(string(out))
+		}
+	}
+	headPath := filepath.Join(repoDir, ".git", "HEAD")
+	if data, err := os.ReadFile(headPath); err == nil {
+		line := strings.TrimSpace(string(data))
+		if strings.HasPrefix(line, "ref: ") {
+			ref := strings.TrimPrefix(line, "ref: ")
+			refPath := filepath.Join(repoDir, ".git", ref)
+			if data2, err := os.ReadFile(refPath); err == nil {
+				return strings.TrimSpace(string(data2))[:7]
+			}
+		}
+	}
+	return "unknown"
+}
+
+func copyRecursive(src, dst string) error {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if !srcInfo.IsDir() {
+		return copyFile(src, dst)
+	}
+	if err := os.MkdirAll(dst, srcInfo.Mode()); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+		if entry.IsDir() {
+			if err := copyRecursive(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	if err != nil {
+		return err
+	}
+	return out.Sync()
 }

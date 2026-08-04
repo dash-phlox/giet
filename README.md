@@ -25,11 +25,18 @@ git clone https://github.com/dash-phlox/giet.git
 cd giet/src
 go mod init giet
 go mod tidy
-go build -o giet ./cmd
-sudo mv giet /usr/local/bin/
+go build -ldflags="-s -w" -o giet ./cmd
+mkdir -p ~/.local/bin
+mv giet ~/.local/bin/
 ```
 
-> You can replace `sudo` with `doas` if you prefer.
+## Update
+
+Once installed, you can update Giet itself with:
+
+```sh
+giet --self-update
+```
 
 ## Usage
 
