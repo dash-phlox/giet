@@ -202,7 +202,7 @@ func FindAsset(release *github.GitHubRelease, arch string) (string, []AssetInfo)
 		archVariants = append(archVariants, "arm64")
 	}
 
-	allArchs := []string{""x86_64", "amd64", x64", "aarch64", "arm64", "armv7l", "arm", "i686", "386"}
+	allArchs := []string{"x86_64", "amd64", "x64", "aarch64", "arm64", "armv7l", "arm", "i686", "386"}
 
 	for _, asset := range release.Assets {
 		name := asset.Name
