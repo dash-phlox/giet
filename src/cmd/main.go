@@ -21,7 +21,7 @@ import (
 	"github.com/spf13/pflag"
 )
 
-const version = "0.7.2"
+const version = "0.7.3"
 
 var (
 	quiet        bool
@@ -225,7 +225,7 @@ Options:
   -v,  --verbose                   Show verbose (detailed) logging
   -y,  --yes                       Auto-confirm prompts
   -f,  --force                     Force removal even if removal fails (with -r)
-  -fv, --force-version             Install specific version of a package (with -i)
+       --force-version <version>   Install specific version of a package (with -i)
 
 Giet:
   -h,  --help                      Show this help message
@@ -352,6 +352,21 @@ func runUnlock(pkg string) {
 	fmt.Printf(utils.Colorize(utils.ColorGreen, "Unlocked %s\n"), key)
 }
 
+func getAssetType(url string) string {
+	lower := strings.ToLower(url)
+	if strings.HasSuffix(lower, ".appimage") {
+		return "appimage"
+	}
+	if strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz") ||
+		strings.HasSuffix(lower, ".tar.xz") || strings.HasSuffix(lower, ".tar") {
+		return "tarball"
+	}
+	if strings.HasSuffix(lower, ".zip") {
+		return "zip"
+	}
+	return ""
+}
+
 func runInstall(url string, isUpdate bool) {
 	owner, repo, err := github.ParseRepoURL(url)
 	if err != nil {
@@ -445,11 +460,11 @@ func runInstall(url string, isUpdate bool) {
 			return
 		} else {
 			fmt.Printf(utils.Colorize(utils.ColorYellow, "Package %s is already at version %s.\n"), key, release.TagName)
-			if !yes {
-				fmt.Print("Reinstall? [y/N]: ")
+			if !yes && !force {
+				fmt.Print("Reinstall? [Y/n]: ")
 				var resp string
 				fmt.Scanln(&resp)
-				if resp != "y" && resp != "Y" {
+				if resp != "" && resp != "y" && resp != "Y" {
 					fmt.Println("Skipping.")
 					return
 				}
@@ -466,6 +481,47 @@ func runInstall(url string, isUpdate bool) {
 	assetResult, candidates := installer.FindAsset(release, arch)
 	var selectedAsset string
 	var userSelected bool
+
+	if isUpdate && exists && existing.AssetURL != "" {
+		preferredType := getAssetType(existing.AssetURL)
+		if preferredType != "" && assetResult == "MULTIPLE" {
+			var matched []installer.AssetInfo
+			for _, cand := range candidates {
+				if getAssetType(cand.URL) == preferredType {
+					matched = append(matched, cand)
+				}
+			}
+			if len(matched) == 1 {
+				selectedAsset = matched[0].URL
+				userSelected = false
+				assetResult = ""
+				if !quiet {
+					fmt.Printf("Auto-selected %s\n", filepath.Base(selectedAsset))
+				}
+			} else if len(matched) > 1 {
+				candidates = matched
+			} else {
+				if !quiet {
+					fmt.Println(utils.Colorize(utils.ColorYellow, "No asset of the same type found, showing all candidates."))
+				}
+			}
+		} else if assetResult != "MULTIPLE" && selectedAsset != "" && preferredType != "" {
+			if getAssetType(selectedAsset) != preferredType {
+				if !quiet {
+					fmt.Println(utils.Colorize(utils.ColorYellow, fmt.Sprintf("Warning: updating with a different asset type (%s instead of %s)", getAssetType(selectedAsset), preferredType)))
+					if !yes && !force {
+						fmt.Print("Continue? [y/N]: ")
+						var resp string
+						fmt.Scanln(&resp)
+						if resp != "y" && resp != "Y" {
+							fmt.Println("Aborted.")
+							return
+						}
+					}
+				}
+			}
+		}
+	}
 
 	if assetResult == "MULTIPLE" {
 		fmt.Println(utils.Colorize(utils.ColorYellow, "Multiple compatible assets found:"))
@@ -487,7 +543,7 @@ func runInstall(url string, isUpdate bool) {
 		}
 		selectedAsset = candidates[choice-1].URL
 		userSelected = true
-	} else if assetResult == "" {
+	} else if assetResult == "" && selectedAsset == "" {
 		fmt.Println(utils.Colorize(utils.ColorYellow, "No compatible asset found in the latest stable release."))
 		fmt.Println("Searching for a compatible asset in other releases (including prereleases)...")
 		fallbackRelease, fallbackAsset, err := github.FindFirstReleaseWithCompatibleAsset(owner, repo, arch)
@@ -532,7 +588,7 @@ func runInstall(url string, isUpdate bool) {
 			fmt.Println(utils.Colorize(utils.ColorRed, "Installation cancelled."))
 			return
 		}
-	} else {
+	} else if selectedAsset == "" && assetResult != "" {
 		selectedAsset = assetResult
 		userSelected = false
 	}
@@ -552,10 +608,10 @@ func runInstall(url string, isUpdate bool) {
 		} else if exists && existing.Version == release.TagName {
 			action = "Reinstall"
 		}
-		fmt.Printf("%s package %s? [y/N]: ", action, key)
+		fmt.Printf("%s package %s? [Y/n]: ", action, key)
 		var resp5 string
 		fmt.Scanln(&resp5)
-		if resp5 != "y" && resp5 != "Y" {
+		if resp5 != "" && resp5 != "y" && resp5 != "Y" {
 			fmt.Println("Aborted.")
 			return
 		}
@@ -613,6 +669,14 @@ func runUpdateAll() {
 		fmt.Println("No packages installed.")
 		return
 	}
+
+	type updateInfo struct {
+		key           string
+		latestVer     string
+		latestRelease *github.GitHubRelease
+	}
+	var updates []updateInfo
+
 	for key, info := range pkgs {
 		if info.LockedVersion != "" {
 			if !quiet {
@@ -626,11 +690,49 @@ func runUpdateAll() {
 			}
 			continue
 		}
-		url := fmt.Sprintf("https://github.com/%s/%s", info.Owner, info.Repo)
-		if !quiet {
-			fmt.Printf("Updating %s...\n", key)
+
+		release, err := github.GetLatestRelease(info.Owner, info.Repo)
+		if err != nil {
+			if !quiet {
+				fmt.Printf(utils.Colorize(utils.ColorRed, "Error fetching latest release for %s: %v\n"), key, err)
+			}
+			continue
 		}
+		if release.TagName == "HEAD" || release.TagName == "" {
+			continue
+		}
+		if info.Version != release.TagName {
+			updates = append(updates, updateInfo{
+				key:           key,
+				latestVer:     release.TagName,
+				latestRelease: release,
+			})
+		}
+	}
+
+	if len(updates) == 0 {
+		fmt.Println("All packages are up to date.")
+		return
+	}
+
+	if !quiet {
+		fmt.Printf("Updating %d package(s):\n", len(updates))
+		for _, u := range updates {
+			fmt.Printf("  - %s (%s -> %s)\n", u.key, pkgs[u.key].Version, u.latestVer)
+		}
+		fmt.Println()
+	}
+
+	for i, u := range updates {
+		if !quiet {
+			fmt.Printf("[%d/%d] Updating %s...\n", i+1, len(updates), u.key)
+		}
+		url := fmt.Sprintf("https://github.com/%s/%s", pkgs[u.key].Owner, pkgs[u.key].Repo)
 		runInstall(url, true)
+	}
+
+	if !quiet {
+		fmt.Println(utils.Colorize(utils.ColorGreen, "All packages updated."))
 	}
 }
 
@@ -731,10 +833,10 @@ func runUpdate(arg string) {
 	}
 
 	if !yes {
-		fmt.Printf("Update package %s to the latest version? [y/N]: ", key)
+		fmt.Printf("Update package %s to the latest version? [Y/n]: ", key)
 		var resp string
 		fmt.Scanln(&resp)
-		if resp != "y" && resp != "Y" {
+		if resp != "" && resp != "y" && resp != "Y" {
 			fmt.Println("Aborted.")
 			return
 		}
